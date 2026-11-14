@@ -1,0 +1,12 @@
+{
+  "name": "machine_panel",
+  "meta": {
+    "panel_border": "#5A7A9E"
+  },
+  "controls": [
+    { "id": "title", "type": "label", "rect": {"x": 30, "y": 3},
+      "font": 17, "color": "#C8D8F0", "text": "机器" },
+    { "id": "section", "type": "label", "rect": {"x": 14, "y": 36},
+      "font": 14, "text": "当前配方" }
+  ]
+}

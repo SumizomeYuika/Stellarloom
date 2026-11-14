@@ -1,0 +1,27 @@
+{
+  "name": "mods_panel",
+  "meta": {
+    "panel_bg": "#0E1320F2",
+    "panel_border": "#5A6E9E",
+    "titlebar_bg": "#1C2940",
+    "title": "#F0E1A0",
+    "text": "#E1E8F2",
+    "muted": "#7A8498",
+    "hint": "#8C96AA",
+    "ok": "#66BB9A",
+    "warn": "#F0B860",
+    "danger": "#E07060",
+    "row_bg": "#1A2132",
+    "row_frame": "#3C4864",
+    "row_sel_bg": "#2A3A58",
+    "row_sel_frame": "#8AB8F0"
+  },
+  "controls": [
+    { "id": "title", "type": "label", "rect": {"x": 30, "y": 3},
+      "font": 18, "text": "模组管理" },
+    { "id": "left_h", "type": "label", "rect": {"x": 16, "y": 38},
+      "font": 13, "color": "#8C96AA", "text": "模组列表（mods/）" },
+    { "id": "right_h", "type": "label", "rect": {"x": 256, "y": 38},
+      "font": 13, "color": "#8C96AA", "text": "详情" }
+  ]
+}

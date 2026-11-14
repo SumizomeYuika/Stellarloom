@@ -1,0 +1,12 @@
+{
+  "name": "bag_panel",
+  "controls": [
+    { "id": "title", "type": "label", "rect": {"x": 30, "y": 3},
+      "font": 17, "color": "#C8D8F0", "text": "背包" },
+    { "id": "list", "type": "list",
+      "rect": {"x": 0, "y": 34, "cols": 2, "pad": 14, "col_gap": 12,
+               "row_h": 24} },
+    { "id": "footer", "type": "label", "rect": {"x": 14, "y": -24},
+      "font": 15, "text": "点面板外关闭" }
+  ]
+}

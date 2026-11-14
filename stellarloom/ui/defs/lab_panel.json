@@ -1,0 +1,24 @@
+{
+  "name": "lab_panel",
+  "meta": {
+    "panel_border": "#6E5AA0",
+    "title": "#D2BEEF",
+    "btn_active_bg": "#46386A",
+    "btn_active_frame": "#AA96DC",
+    "sec_heading": "#B4AEE8",
+    "item_accent": "#78C8E8",
+    "warn": "#DCA86A"
+  },
+  "controls": [
+    { "id": "title", "type": "label", "rect": {"x": 30, "y": 3},
+      "font": 17, "text": "科研站" },
+    { "id": "mode_r", "type": "button",
+      "rect": {"x": 14, "y": 34, "w": 90, "h": 26},
+      "font": 13, "text": "研究模式" },
+    { "id": "mode_p", "type": "button",
+      "rect": {"x": 110, "y": 34, "w": 90, "h": 26},
+      "font": 13, "text": "制造模式" },
+    { "id": "footer", "type": "label", "rect": {"x": 14, "y": -22},
+      "font": 13, "text": "点面板外关闭" }
+  ]
+}

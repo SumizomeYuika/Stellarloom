@@ -1,0 +1,42 @@
+{
+  "name": "save_panel",
+  "meta": {
+    "mask": "#00000078",
+    "panel_bg": "#0E1220",
+    "panel_border": "#6478AA",
+    "radius": 10,
+    "title_color": "#F0E1A0",
+    "text": "#E1E8F2",
+    "muted": "#7880A0",
+    "hint": "#8C96AA",
+    "danger": "#DC8282",
+    "btn_bg": "#385276",
+    "btn_frame": "#5A6482",
+    "row_bg": "#1E2434",
+    "row_frame": "#3C4864",
+    "current_frame": "#B4A05A"
+  },
+  "controls": [
+    { "id": "title", "type": "label", "x": 30, "y": 3, "font": 18,
+      "color": "#F0E1A0" },
+    { "id": "current_hint", "type": "label", "x": 14, "y": 38, "font": 12,
+      "color": "#8C96AA" },
+    { "id": "close", "type": "button", "anchor": "tr", "x": -34, "y": 3,
+      "w": 24, "h": 20, "bg": "#3C2830", "frame": "#AA5A5A" },
+    { "id": "legacy", "type": "button", "x": 12, "y": -112, "w": -24,
+      "h": 30, "font": 14, "text": "读取旧档（多存档之前的 save.slm）",
+      "bg": "#3C3C5A", "frame": "#5A6482" },
+    { "id": "auto", "type": "button", "x": 12, "y": -78, "w": -24,
+      "h": 30, "font": 14, "text": "读取最新自动存档",
+      "bg": "#385276", "frame": "#5A6482" },
+    { "id": "footer", "type": "label", "x": 14, "y": -34, "font": 12,
+      "color": "#697082" },
+    { "id": "slots", "type": "list", "x": 12, "y": 58, "w": -24, "h": -80,
+      "item_h": 46, "gap": 8, "label_x": 118,
+      "btn_w_save": 88, "btn_w_load": 62,
+      "btn_save_text": "覆盖保存", "btn_save_empty_text": "存入",
+      "btn_load_text": "读取",
+      "empty_save": "（空槽位）", "empty_load": "（空）",
+      "broken_text": "（存档损坏，覆盖可修复）" }
+  ]
+}

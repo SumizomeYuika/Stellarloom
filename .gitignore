@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+
+# 虚拟环境
+venv/
+ENV/
+env/
+.venv/
+
+# 存档与本机数据（含玩家进度，不进仓库）
+save.slm
+saves/
+*.slm
+!stellarloom/data/*.json
+
+# mod 运行时缓存与半成品
+mods/_cache/
+mods/*.slmmod
+
+# 开发者内部文档（不公开）
+意见2.txt
+接力提示.txt
+星织md.txt
+*.local.md
+意见*.txt
+接力提示*.txt
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 本地临时脚本
+_tmp_*.py

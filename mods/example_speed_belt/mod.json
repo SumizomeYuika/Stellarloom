@@ -1,0 +1,5 @@
+{
+  "name": "example_speed_belt",
+  "version": "1.0",
+  "description": "示例 mod：传送带双倍速（mixin before 替换参数）"
+}

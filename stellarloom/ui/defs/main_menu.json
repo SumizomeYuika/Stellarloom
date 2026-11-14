@@ -1,0 +1,32 @@
+{
+  "name": "main_menu",
+  "meta": {
+    "mask": "#0A0D16E0",
+    "title_color": "#F0E1A0",
+    "text": "#E1E8F2",
+    "muted": "#7A8498",
+    "sub_color": "#8C96AA",
+    "btn_bg": "#2A3A58",
+    "btn_frame": "#5A6482",
+    "btn_active_bg": "#466E9E"
+  },
+  "controls": [
+    { "id": "title", "type": "label", "rect": {"anchor": "cc", "x": 0, "y": -115},
+      "font": 34, "color": "#F0E1A0", "text": "星织 · 无尽沙盒" },
+    { "id": "subtitle", "type": "label", "rect": {"anchor": "cc", "x": 0, "y": -78},
+      "font": 13, "color": "#8C96AA", "text": "StellarLoom-PG · 戴森球计划式沙盒工厂" },
+    { "id": "new", "type": "button", "rect": {"x": 20, "y": -300, "w": -40, "h": 50},
+      "font": 20, "text": "开始新游戏" },
+    { "id": "continue", "type": "button",
+      "rect": {"x": 20, "y": -240, "w": -40, "h": 50}, "font": 20,
+      "text": "继续游戏" },
+    { "id": "load", "type": "button", "rect": {"x": 20, "y": -180, "w": -40, "h": 50},
+      "font": 20, "text": "读  档" },
+    { "id": "mods", "type": "button", "rect": {"x": 20, "y": -120, "w": -40, "h": 50},
+      "font": 20, "text": "模  组" },
+    { "id": "quit", "type": "button", "rect": {"x": 20, "y": -60, "w": -40, "h": 50},
+      "font": 20, "text": "退出游戏" },
+    { "id": "footer", "type": "label", "rect": {"anchor": "cc", "x": 0, "y": -30},
+      "font": 12, "color": "#7A8498", "text": "存档自动保存到 slot_1..6 · F5 快速存档" }
+  ]
+}

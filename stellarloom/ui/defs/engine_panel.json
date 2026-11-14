@@ -1,0 +1,15 @@
+{
+  "name": "engine_panel",
+  "meta": {
+    "hint": "#8FA0B8",
+    "btn_bg": "#40465C",
+    "btn_on": "#46776E",
+    "btn_border": "#5A647E",
+    "window_w": "#6FA8DC",
+    "text": "#D2D7E1"
+  },
+  "controls": [
+    { "id": "title", "type": "label", "rect": {"x": 30, "y": 3},
+      "font": 17, "text": "行星引擎" }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "name": "tower_panel",
+  "meta": {
+    "filter_frame": "#FFF064",
+    "drone_bar_bg": "#32384A"
+  },
+  "controls": [
+    { "id": "title", "type": "label", "rect": {"x": 30, "y": 3},
+      "font": 17, "text": "供应塔" },
+    { "id": "stock_h", "type": "label", "rect": {"x": 14, "y": 34},
+      "font": 15, "text": "库存:" }
+  ]
+}

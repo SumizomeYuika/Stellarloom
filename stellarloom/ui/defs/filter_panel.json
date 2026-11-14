@@ -1,0 +1,16 @@
+{
+  "name": "filter_panel",
+  "controls": [
+    { "id": "title", "type": "label", "rect": {"x": 30, "y": 3},
+      "font": 17, "color": "#C8D8F0", "text": "分拣器过滤" },
+    { "id": "current", "type": "label", "rect": {"x": 14, "y": 34},
+      "font": 14, "text": "当前：不限" },
+    { "id": "clear", "type": "button",
+      "rect": {"x": 12, "y": 60, "w": -24, "h": 30},
+      "font": 14, "text": "不限（抓所有）" },
+    { "id": "grid", "type": "list",
+      "rect": {"x": 0, "y": 100, "pad": 12, "cols": 3, "item_h": 30, "gap": 4} },
+    { "id": "footer", "type": "label", "rect": {"x": 14, "y": -20},
+      "font": 12, "text": "点面板外关闭" }
+  ]
+}

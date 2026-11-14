@@ -1,0 +1,11 @@
+{
+  "enabled": true,
+  "max_lines": 10,
+  "title_size": 20,
+  "font_size": 18,
+  "bg_alpha": 225,
+  "show_coords": false,
+  "show_source": true,
+  "show_net_overlay": true,
+  "net_overlay_alpha": 80
+}

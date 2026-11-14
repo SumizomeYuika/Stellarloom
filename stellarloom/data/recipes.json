@@ -1,0 +1,31 @@
+{
+  "iron_plate":   { "inputs": {"stellarloom:iron_ore": 1},  "outputs": {"stellarloom:iron_plate": 1},  "dur": 1.0, "machines": ["stellarloom:furnace"] },
+  "copper_plate": { "inputs": {"stellarloom:copper_ore": 1},  "outputs": {"stellarloom:copper_plate": 1}, "dur": 1.0, "machines": ["stellarloom:furnace"] },
+  "stone_brick":  { "inputs": {"stellarloom:stone": 1},  "outputs": {"stellarloom:stone_brick": 1}, "dur": 1.0, "machines": ["stellarloom:furnace"] },
+  "magnet":       { "inputs": {"stellarloom:iron_plate": 1},  "outputs": {"stellarloom:magnet": 1}, "dur": 1.5, "machines": ["stellarloom:furnace"] },
+  "grain":        { "inputs": {"stellarloom:stone": 2},  "outputs": {"stellarloom:grain": 1}, "dur": 1.0, "machines": ["stellarloom:furnace"] },
+
+  "gear":         { "inputs": {"stellarloom:iron_plate": 1},  "outputs": {"stellarloom:gear": 1}, "dur": 1.0, "machines": ["stellarloom:assembler"] },
+  "copper_wire":  { "inputs": {"stellarloom:copper_plate": 1},  "outputs": {"stellarloom:copper_wire": 2}, "dur": 0.5, "machines": ["stellarloom:assembler"] },
+  "circuit":      { "inputs": {"stellarloom:iron_plate": 2, "stellarloom:copper_plate": 1}, "outputs": {"stellarloom:circuit": 2}, "dur": 1.0, "machines": ["stellarloom:assembler"] },
+  "solar_sail":   { "inputs": {"stellarloom:grain": 2, "stellarloom:copper_wire": 2}, "outputs": {"stellarloom:solar_sail": 2}, "dur": 2.0, "machines": ["stellarloom:assembler"] },
+
+  "science_blue": { "inputs": {"stellarloom:magnet": 1, "stellarloom:copper_wire": 2}, "outputs": {"stellarloom:science_blue": 1}, "dur": 3.0, "machines": ["stellarloom:lab"] },
+  "science_red":  { "inputs": {"stellarloom:magnet": 2, "stellarloom:circuit": 3, "stellarloom:grain": 2}, "outputs": {"stellarloom:science_red": 1}, "dur": 5.0, "machines": ["stellarloom:lab"] },
+
+  "belt":         { "inputs": {"stellarloom:iron_plate": 2, "stellarloom:gear": 1}, "outputs": {"stellarloom:belt": 3}, "dur": 1.0, "machines": ["stellarloom:assembler"] },
+  "inserter":     { "inputs": {"stellarloom:iron_plate": 1, "stellarloom:circuit": 1}, "outputs": {"stellarloom:inserter": 1}, "dur": 1.0, "machines": ["stellarloom:assembler"] },
+  "miner":        { "inputs": {"stellarloom:iron_plate": 4, "stellarloom:circuit": 2, "stellarloom:magnet": 2, "stellarloom:gear": 2}, "outputs": {"stellarloom:miner": 1}, "dur": 3.0, "machines": ["stellarloom:assembler"] },
+  "furnace":      { "inputs": {"stellarloom:iron_plate": 4, "stellarloom:stone_brick": 2, "stellarloom:circuit": 4, "stellarloom:magnet": 2}, "outputs": {"stellarloom:furnace": 1}, "dur": 3.0, "machines": ["stellarloom:assembler"] },
+  "assembler":    { "inputs": {"stellarloom:iron_plate": 4, "stellarloom:gear": 4, "stellarloom:copper_wire": 4}, "outputs": {"stellarloom:assembler": 1}, "dur": 3.0, "machines": ["stellarloom:assembler"] },
+  "solar":        { "inputs": {"stellarloom:copper_plate": 10, "stellarloom:stone_brick": 5, "stellarloom:circuit": 5}, "outputs": {"stellarloom:solar": 1}, "dur": 6.0, "machines": ["stellarloom:assembler"] },
+  "wind":         { "inputs": {"stellarloom:iron_plate": 6, "stellarloom:gear": 1, "stellarloom:magnet": 3}, "outputs": {"stellarloom:wind": 1}, "dur": 4.0, "machines": ["stellarloom:assembler"] },
+  "tower_s":      { "inputs": {"stellarloom:iron_plate": 10, "stellarloom:gear": 5, "stellarloom:copper_wire": 10}, "outputs": {"stellarloom:tower_supply": 1}, "dur": 6.0, "machines": ["stellarloom:assembler"] },
+  "tower_r":      { "inputs": {"stellarloom:iron_plate": 10, "stellarloom:gear": 5, "stellarloom:copper_wire": 10}, "outputs": {"stellarloom:tower_request": 1}, "dur": 6.0, "machines": ["stellarloom:assembler"] },
+  "lab":          { "inputs": {"stellarloom:iron_plate": 8, "stellarloom:stone_brick": 4, "stellarloom:copper_wire": 4, "stellarloom:magnet": 4}, "outputs": {"stellarloom:lab": 1}, "dur": 4.0, "machines": ["stellarloom:assembler"] },
+  "chest":        { "inputs": {"stellarloom:iron_plate": 4, "stellarloom:stone_brick": 4}, "outputs": {"stellarloom:chest": 1}, "dur": 2.0, "machines": ["stellarloom:assembler"] },
+  "emitter":      { "inputs": {"stellarloom:iron_plate": 8, "stellarloom:circuit": 6, "stellarloom:stone_brick": 6, "stellarloom:gear": 4}, "outputs": {"stellarloom:emitter": 1}, "dur": 5.0, "machines": ["stellarloom:assembler"] },
+  "launch_pad":   { "inputs": {"stellarloom:iron_plate": 12, "stellarloom:circuit": 8, "stellarloom:gear": 6, "stellarloom:copper_wire": 4}, "outputs": {"stellarloom:launch_pad": 1}, "dur": 8.0, "machines": ["stellarloom:assembler"] },
+  "power_pole":    { "inputs": {"stellarloom:iron_plate": 3, "stellarloom:copper_wire": 4}, "outputs": {"stellarloom:power_pole": 1}, "dur": 2.0, "machines": ["stellarloom:assembler"] },
+ "planet_engine":{ "inputs": {"stellarloom:iron_plate": 24, "stellarloom:circuit": 16, "stellarloom:gear": 12, "stellarloom:copper_wire": 12, "stellarloom:stone_brick": 12}, "outputs": {"stellarloom:planet_engine": 1}, "dur": 12.0, "machines": ["stellarloom:assembler"] }
+}

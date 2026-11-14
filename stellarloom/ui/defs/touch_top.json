@@ -1,0 +1,23 @@
+{
+  "name": "touch_top",
+  "meta": {
+    "gap": 6,
+    "pad_right": 8,
+    "pad_top": 5,
+    "w_h_ratio": 1.5,
+    "btn_min_w": 34
+  },
+  "buttons": [
+    { "action": "pause", "text": "暂停" },
+    { "action": "rotate", "text": "方向→" },
+    { "action": "remove", "text": "拆除" },
+    { "action": "view", "text": "查看" },
+    { "action": "tech", "text": "科技" },
+    { "action": "orbit", "text": "轨道" },
+    { "action": "bag", "text": "背包" },
+    { "action": "craft", "text": "合成" },
+    { "action": "save", "text": "存" },
+    { "action": "load", "text": "读" },
+    { "action": "menu", "text": "菜单" }
+  ]
+}

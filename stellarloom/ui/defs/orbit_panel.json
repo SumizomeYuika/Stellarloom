@@ -1,0 +1,11 @@
+{
+  "name": "orbit_panel",
+  "meta": {
+    "panel_border": "#5A6E9E",
+    "title": "#F0E1A0"
+  },
+  "controls": [
+    { "id": "title", "type": "label", "rect": {"x": 30, "y": 3},
+      "font": 17, "text": "轨道图 · 行星 / 戴森云" }
+  ]
+}
