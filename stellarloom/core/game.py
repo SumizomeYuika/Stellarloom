@@ -893,11 +893,8 @@ class Game:
 
         以下几种情况必须禁止，否则会把放置动作吃掉：
         - 拆除模式
-        - 手上有两点式工具（分拣器）或正在两点放置中
+        - 正在两点放置中（第一点已定，第二点要用于落子）
         - 选中的就是塔（塔的点击是用来放/拆的）
-
-        注意：分拣器**不在此列**。手里拿着传送带时点分拣器格要能开过滤面板，
-        否则玩家永远找不到过滤入口（原来只允许查看模式，实际等于藏起来了）。
         """
         if self.ui.remove_mode:
             return False
@@ -910,17 +907,27 @@ class Game:
         return True
 
     def _try_open_panel(self, gx: int, gy: int) -> bool:
-        """优先开机器面板（更具体），其次塔面板。返回 True 表示开了。"""
+        """优先开机器面板（更具体），其次塔面板。返回 True 表示开了。
+
+        分拣器格（overlay）开过滤面板，但**手里拿着分拣器时例外**：
+        两点式放置的第一点常常就是机器格（从熔炉上抓货），这时必须把点击
+        让给放置流程，否则会弹机器面板、导致分拣器根本放不上去。
+        唯一例外是该格已经占了分拣器——那种情况本来就放不上去，
+        开面板给玩家改过滤/拆除的出口。
+        """
         if not self._can_open_panel():
             return False
-        # 分拣器（overlay）：开过滤面板。
-        # M13.3：不再要求查看模式。手里拿着传送带/分拣器时也允许开——
-        # 否则过滤功能等于隐藏；铺带子被面板吃点击的代价可以接受（点面板外即关）。
-        if self.grid.get_overlay(gx, gy) == C.B_INSERTER:
+        has_inserter = self.grid.get_overlay(gx, gy) == C.B_INSERTER
+        holding_inserter = self.selected_building == C.B_INSERTER
+
+        if has_inserter:
             self.filter_panel.show(self.screen.get_size(), (gx, gy),
                                    self.grid.get_overlay_filter(gx, gy),
                                    self.grid.get_overlay_dir(gx, gy))
             return True
+        # 手里拿分拣器、目标格没有 overlay → 这一击是放置用的，别开任何面板
+        if holding_inserter:
+            return False
         m = self.machines.get_machine(gx, gy)
         if m is not None:
             self.machine_panel.show(m, self.screen.get_size(), self.tech.researched,
