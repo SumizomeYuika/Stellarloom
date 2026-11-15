@@ -110,6 +110,14 @@ def main() -> int:
     check("A 加载成功", not mgrA.failed, str(mgrA.failed))
     import mod_gregtech_heavy_main as GT
     simA = mgrA.game.sim
+    # M13.2：开局不再白送核心 → 测试产线必须自己供电
+    simA.inventory[C.BUILD_ITEM[C.B_WIND]] = 8
+    for dx in range(6):
+        simA.place_building(C.B_WIND, 8 + dx, 8, 0)
+    simA.power.rebuild()
+    simA.power.update(0.1)
+    check("A 测试供电（风力 240 kW）", simA.power.last_supply >= 200.0,
+          f"supply={simA.power.last_supply:.1f}")
     simA.tech.researched.add("gt_ore")
     simA.inventory[GT.I_GT_CRUSHER] = 5
     check("A 放置粉碎机", simA.place_building(GT.B_GT_CRUSHER, 10, 10, 0) == "ok")
@@ -161,6 +169,14 @@ def main() -> int:
     check("B 配置合并：未覆盖项保留作者默认", X._CFG.get("toasts", True) is True)
 
     simB = mgrB.game.sim
+    # M13.2：测试产线自己供电（同 A）
+    simB.inventory[C.BUILD_ITEM[C.B_WIND]] = 8
+    for dx in range(6):
+        simB.place_building(C.B_WIND, 8 + dx, 8, 0)
+    simB.power.rebuild()
+    simB.power.update(0.1)
+    check("B 测试供电（风力 240 kW）", simB.power.last_supply >= 200.0,
+          f"supply={simB.power.last_supply:.1f}")
     simB.tech.researched.update(
         {"ex_mining", "ex_form", "ex_chem", "ex_alloy", "ex_reactor",
          "ex_accel", "ex_mb", "ex_mb2"})
@@ -307,6 +323,14 @@ def main() -> int:
           "重工" in cats and "星际工业" in cats and "多方块" in cats, str(cats))
 
     simC = gameC.sim
+    # M13.2：测试产线自己供电（同 A/B）
+    simC.inventory[C.BUILD_ITEM[C.B_WIND]] = 8
+    for dx in range(6):
+        simC.place_building(C.B_WIND, 8 + dx, 8, 0)
+    simC.power.rebuild()
+    simC.power.update(0.1)
+    check("C 测试供电（风力 240 kW）", simC.power.last_supply >= 200.0,
+          f"supply={simC.power.last_supply:.1f}")
     simC.tech.researched.update(
         {"ex_mining", "ex_form", "ex_chem", "ex_alloy", "ex_reactor",
          "ex_accel", "ex_mb", "ex_mb2"})

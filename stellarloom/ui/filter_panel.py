@@ -1,7 +1,8 @@
 """分拣器过滤面板：给某个分拣器指定"只抓某种物品"。
 
-打开方式：查看模式下点分拣器。
-点物品格 = 设为过滤；点"不限" = 清除过滤。点面板外关闭。
+打开方式：点任意分拣器格（不需要查看模式了，M13.3）。
+点物品格 = 设为过滤；点"不限" = 清除过滤；点"拆除" = 直接拆掉这个分拣器。
+点面板外关闭。
 
 M6.26：外观（标题/配色/布局参数）走 `defs/filter_panel.json`
 （UI 定义层，颜色取 theme.json 兜底）；物品网格是动态列表，行内容
@@ -17,8 +18,14 @@ from . import uidef
 
 COLS = 3
 
+# hit() 的返回值：这些是特殊动作，不是物品 ID
+ACT_REMOVE = -1
+
 
 class FilterPanel:
+    #: hit() 特殊返回值：点了"拆除分拣器"按钮
+    ACT_REMOVE = ACT_REMOVE
+
     def __init__(self, fonts):
         self.fonts = fonts
         self.defs = uidef.load_def("filter_panel.json")
@@ -26,25 +33,28 @@ class FilterPanel:
         self.rect = pygame.Rect(0, 0, 460, 420)
         self.cell: tuple[int, int] | None = None   # 正在编辑的分拣器格子
         self.current = 0                           # 当前过滤物品，0 = 不限
-        # (rect, item) 列表，item=0 表示"不限"
+        self.dir = 0                               # 分拣器朝向（用于显示来源/目标）
+        # (rect, item) 列表，item=0 表示"不限"，ACT_REMOVE 表示拆除
         self.rows: list[tuple[pygame.Rect, int]] = []
 
-    def show(self, screen_size, cell: tuple[int, int], current: int):
+    def show(self, screen_size, cell: tuple[int, int], current: int,
+             direction: int = -1):
         self.cell = cell
         self.current = current
+        self.dir = direction
         self.open = True
         sw, sh = screen_size
         w = min(460, int(sw * 0.9))
-        h = min(420, int(sh * 0.78))
+        h = min(460, int(sh * 0.82))
         self.rect.size = (w, h)
         self.rect.center = (sw // 2, sh // 2)
 
     def close(self):
         self.open = False
         self.cell = None
-
     def hit(self, pos):
-        """返回要设置的物品 ID（0=不限）；点面板外返回 None 且关闭。"""
+        """返回要设置的物品 ID（0=不限）、ACT_REMOVE（拆除）；
+        点面板外返回 None 且关闭。"""
         if not self.open:
             return None
         if not self.rect.collidepoint(pos):
@@ -61,6 +71,13 @@ class FilterPanel:
         items.sort()
         return items
 
+    def _flow_text(self) -> str:
+        """来源格 → 目标格 的方向说明，帮玩家确认这根臂朝哪边抓。"""
+        if self.dir < 0 or self.dir >= len(C.DX):
+            return ""
+        names = ("→ 东", "↓ 南", "← 西", "↑ 北")
+        return f"抓取方向：{names[self.dir]}"
+
     def draw(self, screen: pygame.Surface):
         if not self.open:
             return
@@ -69,15 +86,19 @@ class FilterPanel:
         # M6.28 窗口化：底/边框/标题栏统一画（标题文字走 defs title 控件）
         uidef.draw_window(screen, self.defs, r, self.fonts)
 
-        # 静态控件（标题/当前/不限按钮/脚注）
+        # 静态控件（标题/当前/不限按钮/拆除按钮/脚注）
         overrides = {"text": {}, "active": {}}
         overrides["text"]["current"] = \
             f"当前：{'不限' if self.current <= 0 else C.ITEM_NAMES.get(self.current, '?')}"
+        overrides["text"]["flow"] = self._flow_text()
         overrides["active"]["clear"] = self.current <= 0
         uidef.draw_controls(screen, self.defs, r, self.fonts, overrides)
 
-        # "不限"按钮的行（复用静态按钮的 rect 参与命中）
+        # 可点行：不限 / 拆除
         self.rows = [(self.defs.rect(self.defs.ctrl("clear"), r), 0)]
+        rm = self.defs.ctrl("remove")
+        if rm is not None:
+            self.rows.append((self.defs.rect(rm, r), ACT_REMOVE))
 
         # 物品网格（动态行，参数在 defs 的 grid 列表控件）
         tiny = self.fonts.get(12)

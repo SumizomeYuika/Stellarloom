@@ -51,8 +51,8 @@ def main() -> int:
     check("两行星轨道独立", g.worlds[0].planet is not g.worlds[1].planet)
     same_ore = np.array_equal(g.worlds[0].grid.ore, g.worlds[1].grid.ore)
     check("两行星矿脉分布不同（seed 生效）", not same_ore)
-    check("两行星都有核心（保证开局有电）",
-          g.worlds[0].core_pos is not None and g.worlds[1].core_pos is not None)
+    check("两行星都不预置核心（M13.2 起开局无电）",
+          g.worlds[0].core_pos is None and g.worlds[1].core_pos is None)
     check("戴森云为恒星级共享",
           g.worlds[0].power.dyson is g.dyson and g.worlds[1].power.dyson is g.dyson)
     check("tech 为玩家级共享",
@@ -77,10 +77,10 @@ def main() -> int:
           g.power.planet is g.worlds[1].planet)
     check("世界 1 相机独立", g.camera is g.worlds[1].camera)
 
-    # 世界 1 也有核心：电力能跑（update 一次再查）
+    # 世界 1 开局也没有电（M13.2：核心不再预置，电力全靠自己铺）
     g.power.update(0.0)
-    check("世界 1 核心供电正常",
-          abs(g.power.last_supply - C.POWER_GEN[C.B_CORE]) < 1e-6,
+    check("世界 1 开局无电（需自己建发电）",
+          g.power.last_supply == 0.0,
           f"supply={g.power.last_supply:.1f}")
 
     # ---------- 3. 双行星存档往返 ----------

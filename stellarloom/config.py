@@ -116,11 +116,17 @@ POWER_USAGE = {
 }
 
 # 发电（kW）
+# B_CORE 是**遗留发电**：M13.2 起新开局不再预置核心，但旧存档里已经摆下的
+# 核心必须继续发电，否则老档电力直接掉一半、整条产线降速（破坏存档）。
+# 新档想有电就自己铺太阳能/风力。
 POWER_GEN = {
     B_SOLAR: 60.0,  # 白天满功率，夜晚 0
     B_WIND: 40.0,   # 恒定
-    B_CORE: 160.0,  # 出生核心自带基础供电，保证开局不卡死
+    B_CORE: 160.0,  # 仅旧档兼容：新开局不放核心
 }
+
+# 手动采矿（长按）：挖 1 个要几秒。不需要电、不需要采矿机。
+MANUAL_MINE_SECONDS = 1.2
 
 # 原版建筑 id 集合（mod 的电力数值按旧单位 ×POWER_LEGACY_SCALE 换算）
 VANILLA_BUILDING_IDS = frozenset(b for b, _, _ in _VANILLA_BUILDINGS)
@@ -394,8 +400,11 @@ LAB_PRODUCE_RECIPES = ("science_blue", "science_red")
 LAB_PRODUCE_INPUT_CAP = 10   # 制造模式每种原料最多囤 10 个
 LAB_PRODUCE_OUTPUT_CAP = 10  # 制造模式每种产物最多囤 10 个
 
-# 手搓黑名单：这些配方不许手搓，只能由科研站制造
-HANDCRAFT_BLACKLIST = {"science_blue", "science_red"}
+# 手搓黑名单：这些配方不许手搓，只能由科研站制造。
+# 一级包（电磁矩阵）必须能手搓——开局没电，科研站转不起来，
+# 「挖矿 → 手搓蓝包 → 手动研究 → 解锁电力」是唯一的开局推进路径。
+# 二级包（能量矩阵）仍然垄断给科研站，保住后期自动化门槛。
+HANDCRAFT_BLACKLIST = {"science_red"}
 
 # ---------- 戴森云（M4） ----------
 # 轨道：极坐标（角度 0~360 度），每个轨道能挂多少帆

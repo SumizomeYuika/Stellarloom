@@ -19,7 +19,7 @@ import numpy as np
 import pygame
 
 from .. import config as C
-from ..input.gestures import DragEvent, PinchEvent, TapEvent
+from ..input.gestures import DragEvent, LongPressEvent, PinchEvent, TapEvent
 from ..input.gestures import GestureRecognizer
 from ..input.touch import TouchState
 from ..render import Camera
@@ -125,6 +125,8 @@ class Game:
 
         # 手搓面板的队列接到服务器端同一条（材料扣/产都在 sim）
         self.craft_panel.queue = self.craft
+        # 科技面板的 toast 回调（手动研究提示）
+        self.tech_panel.on_toast = self._toast_msg
 
         # 玩家状态（输入/交互，不属于服务器）
         self.selected_building = C.B_BELT
@@ -133,6 +135,10 @@ class Game:
         self.paused = False
         # 两点放置（传送带、分拣器）
         self.pending_start: tuple[int, int] | None = None
+
+        # 手动采矿（长按）：进度 0~1，满了产 1 个并清零
+        self._mine_cell: tuple[int, int] | None = None
+        self._mine_progress = 0.0
 
         # 自动存档计时（前端策略：调 sim 存）
         self._autosave_acc = 0.0
@@ -310,6 +316,9 @@ class Game:
 
     def _events(self, dt: float):
         size = self.screen.get_size()
+        # 长按轮询（每帧一次，不依赖事件队列里的长按事件）
+        for ev in self.gestures.poll_longpress():
+            self._handle_gesture(ev, dt)
         for e in pygame.event.get():
             if e.type == pygame.QUIT:
                 self.running = False
@@ -385,7 +394,82 @@ class Game:
 
     # ---------- 手势 ----------
 
+    def _can_operate_world(self) -> bool:
+        """当前是否允许操作世界（面板/菜单/模组页都关着）。"""
+        return not (self.menu.open or self.mods_panel.open
+                    or self.craft_panel.open or self.tech_panel.open
+                    or self.filter_panel.open or self.bag_panel.open
+                    or self.save_panel.open or self.storage_panel.open
+                    or self.lab_panel.open or self.machine_panel.open
+                    or self.tower_panel.open or self.pad_panel.open
+                    or self.engine_panel.open or self.orbit_panel.open)
+
+    def _handle_longpress(self, ev, dt: float):
+        """长按矿格 = 手动采矿的起点：只锁住目标格子，进度由 _tick_mining 每帧推。
+
+        不需要电、不需要采矿机——开局唯一免费材料来源。
+        """
+        if not self._can_operate_world():
+            self._mine_cell = None
+            self._mine_progress = 0.0
+            return
+        pos = (int(ev.pos[0]), int(ev.pos[1]))
+        if self.ui.in_bars(pos):
+            self._mine_cell = None
+            self._mine_progress = 0.0
+            return
+        gx, gy = self.mouse_grid(pos)
+        w = self.sim.world
+        if w is None:
+            return
+        # 只有矿格才能采
+        if w.grid.ore[gy % w.grid.h, gx % w.grid.w] <= 0:
+            self._mine_cell = None
+            self._mine_progress = 0.0
+            return
+        if self._mine_cell != (gx, gy):
+            self._mine_cell = (gx, gy)
+            self._mine_progress = 0.0
+
+    def _tick_mining(self, dt: float):
+        """每帧推采矿进度。
+
+        `poll_longpress` 只在手指第一次跨过长按阈值时吐一个事件，之后
+        `lp_done` 就锁死了不会再吐——所以进度不能靠事件驱动，必须在这里
+        按 `holding_pos()` 每帧累加，否则进度条只会涨一帧然后永远卡住。
+        """
+        if self._mine_cell is None:
+            return
+        held = self.gestures.holding_pos()
+        if held is None or not self._can_operate_world():
+            self._mine_cell = None
+            self._mine_progress = 0.0
+            return
+        gx, gy = self._mine_cell
+        w = self.sim.world
+        if w is None:
+            return
+        # 手指滑出原格 / 格子被拆成非矿 → 立刻放弃
+        if self.mouse_grid((int(held[0]), int(held[1]))) != (gx, gy) \
+                or w.grid.ore[gy % w.grid.h, gx % w.grid.w] <= 0:
+            self._mine_cell = None
+            self._mine_progress = 0.0
+            return
+        self._mine_progress += dt / C.MANUAL_MINE_SECONDS
+        while self._mine_progress >= 1.0:
+            self._mine_progress -= 1.0
+            got = self.sim.manual_mine(gx, gy, 1)
+            if not got:
+                self._mine_progress = 0.0
+                break
+            item = w.grid.mine(gx, gy)
+            name = C.ITEM_NAMES.get(item, "?")
+            self._toast_msg(f"+1 {name}", 0.8)
+
     def _handle_gesture(self, ev, dt: float):
+        if isinstance(ev, LongPressEvent):
+            self._handle_longpress(ev, dt)
+            return
         if isinstance(ev, TapEvent):
             pos = (int(ev.pos[0]), int(ev.pos[1]))
             # 主菜单开了：只认菜单按钮，世界全部不响应
@@ -413,9 +497,16 @@ class Game:
             # 过滤面板优先吃点击
             if self.filter_panel.open:
                 choice = self.filter_panel.hit(pos)
-                if choice is not None and self.filter_panel.cell is not None:
+                if choice == FilterPanel.ACT_REMOVE \
+                        and self.filter_panel.cell is not None:
+                    cx, cy = self.filter_panel.cell
+                    ok, _ = self.sim.remove_building(cx, cy)
+                    self.filter_panel.close()
+                    self._toast_msg("分拣器已拆除" if ok else "拆除失败", 1.6)
+                elif choice is not None and self.filter_panel.cell is not None:
                     cx, cy = self.filter_panel.cell
                     self.sim.set_overlay_filter(cx, cy, choice)
+                    self.filter_panel.current = choice
                     name = "不限" if choice <= 0 else C.ITEM_NAMES.get(choice, "?")
                     self._toast_msg(f"分拣器过滤 → {name}", 1.6)
                 return
@@ -615,7 +706,8 @@ class Game:
             self.bag_panel.close()
             self.lab_panel.close()
             self.ui.bag_open = self.ui.craft_open = False
-            self.tech_panel.show(self.tech, self.screen.get_size())
+            self.tech_panel.show(self.tech, self.screen.get_size(),
+                                 self.inventory, self.sim)
         elif action == "orbit":
             # 轨道图（M4）：开时关掉其他大面板
             self.tower_panel.close()
@@ -740,9 +832,18 @@ class Game:
             return
         if self.filter_panel.open:
             choice = self.filter_panel.hit(pos)
-            if choice is not None and self.filter_panel.cell is not None:
+            if choice == FilterPanel.ACT_REMOVE \
+                    and self.filter_panel.cell is not None:
+                cx, cy = self.filter_panel.cell
+                ok, _ = self.sim.remove_building(cx, cy)
+                self.filter_panel.close()
+                self._toast_msg("分拣器已拆除" if ok else "拆除失败", 1.6)
+            elif choice is not None and self.filter_panel.cell is not None:
                 cx, cy = self.filter_panel.cell
                 self.sim.set_overlay_filter(cx, cy, choice)
+                self.filter_panel.current = choice
+                name = "不限" if choice <= 0 else C.ITEM_NAMES.get(choice, "?")
+                self._toast_msg(f"分拣器过滤 → {name}", 1.6)
             return
         # 手搓面板：原来鼠标点击根本没走这里，点面板会穿透到世界去放建筑
         if self.craft_panel.open:
@@ -794,14 +895,15 @@ class Game:
         - 拆除模式
         - 手上有两点式工具（分拣器）或正在两点放置中
         - 选中的就是塔（塔的点击是用来放/拆的）
+
+        注意：分拣器**不在此列**。手里拿着传送带时点分拣器格要能开过滤面板，
+        否则玩家永远找不到过滤入口（原来只允许查看模式，实际等于藏起来了）。
         """
         if self.ui.remove_mode:
             return False
         if self.ui.view_mode:
             return True   # 查看模式就是专门用来点开面板的
         if self.pending_start is not None:
-            return False
-        if self.selected_building == C.B_INSERTER:
             return False
         if self.selected_building in (C.B_TOWER_SUPPLY, C.B_TOWER_REQUEST):
             return False
@@ -811,11 +913,13 @@ class Game:
         """优先开机器面板（更具体），其次塔面板。返回 True 表示开了。"""
         if not self._can_open_panel():
             return False
-        # 分拣器（overlay）：开过滤面板。只允许查看模式，
-        # 否则玩家手里拿着传送带想铺过分拣器格时会被这个面板吃掉点击。
-        if self.ui.view_mode and self.grid.get_overlay(gx, gy) == C.B_INSERTER:
+        # 分拣器（overlay）：开过滤面板。
+        # M13.3：不再要求查看模式。手里拿着传送带/分拣器时也允许开——
+        # 否则过滤功能等于隐藏；铺带子被面板吃点击的代价可以接受（点面板外即关）。
+        if self.grid.get_overlay(gx, gy) == C.B_INSERTER:
             self.filter_panel.show(self.screen.get_size(), (gx, gy),
-                                   self.grid.get_overlay_filter(gx, gy))
+                                   self.grid.get_overlay_filter(gx, gy),
+                                   self.grid.get_overlay_dir(gx, gy))
             return True
         m = self.machines.get_machine(gx, gy)
         if m is not None:
@@ -979,6 +1083,8 @@ class Game:
 
     def _update(self, dt: float):
         self._pan_by_keys(dt)
+        # 长按采矿：每帧按仍按住的手指推进度（前景事件只在跨阈值时触发一次）
+        self._tick_mining(dt)
         # 成就弹窗靠每帧动画，暂停也继续走
         self.ach.update(dt)
         if not self.paused and not self.menu.open and not self.mods_panel.open:
@@ -1158,6 +1264,7 @@ class Game:
         self._draw_inserters()
         self._draw_machine_status()
         self._draw_drones()
+        self._draw_mining()
         self._draw_ghost()
         self._draw_ui()
         self._draw_zoom_hint()
@@ -1426,6 +1533,28 @@ class Game:
                 cargo_color = C.ITEM_COLORS.get(d.cargo, (255, 255, 255))
                 pygame.draw.circle(self.screen, cargo_color,
                                    (int(sx), int(sy)), max(r // 3, 1))
+
+    def _draw_mining(self):
+        """长按采矿进度条：在矿格上方画一条横向进度条。"""
+        if self._mine_cell is None:
+            return
+        gx, gy = self._mine_cell
+        size = self.screen.get_size()
+        tpx = self.camera.tile_px
+        sx, sy = self.camera.world_to_screen(gx * C.TILE, gy * C.TILE, size)
+        sx, sy = int(sx), int(sy)
+        bw = max(int(tpx), 18)
+        bh = max(4, int(tpx * 0.18))
+        bx = sx
+        by = sy - bh - 4
+        pygame.draw.rect(self.screen, (20, 20, 26),
+                         pygame.Rect(bx, by, bw, bh))
+        fill = int(bw * max(0.0, min(1.0, self._mine_progress)))
+        if fill > 0:
+            pygame.draw.rect(self.screen, C.C_SELECT,
+                             pygame.Rect(bx, by, fill, bh))
+        pygame.draw.rect(self.screen, (240, 220, 120),
+                         pygame.Rect(bx, by, bw, bh), 1)
 
     def _draw_ghost(self):
         # 未选建筑或查看模式下不画 ghost

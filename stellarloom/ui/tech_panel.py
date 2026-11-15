@@ -44,11 +44,17 @@ class TechPanel:
         # 选中节点 id（点节点展开描述）；None = 没选中
         self.selected: str | None = None
         self._detail_btn: list[tuple[pygame.Rect, str]] = []
+        self._inventory: dict = {}
+        self._sim = None
 
     # ---------- 开关 ----------
 
-    def show(self, tech, screen_size):
+    def show(self, tech, screen_size, inventory=None, sim=None):
         self._tech = tech
+        # 必须保住引用：写成 `inventory or {}` 时，背包被花空（{} 为假）
+        # 会换成新字典，面板就再也看不到玩家的真实背包了。
+        self._inventory = {} if inventory is None else inventory
+        self._sim = sim
         self.open = True
         self.selected = None
         sw, sh = screen_size
@@ -150,6 +156,16 @@ class TechPanel:
 
     # ---------- 交互 ----------
 
+    def _do_manual(self, tech_id: str):
+        """手动研究一次：扣 1 个科研包、进度 +1。"""
+        if self._sim is not None:
+            ok, msg = self._sim.manual_research(tech_id)
+        else:
+            ok, msg = self._tech.manual_research(tech_id, self._inventory)
+        cb = getattr(self, "on_toast", None)
+        if cb is not None:
+            cb(msg, 1.4 if ok else 1.8)
+
     def hit(self, pos) -> bool:
         if not self.open:
             return False
@@ -166,6 +182,8 @@ class TechPanel:
             if rect.collidepoint(pos):
                 if act == "study" and self.selected in self._nodes:
                     self._tech.start(self.selected)
+                elif act == "manual" and self.selected in self._nodes:
+                    self._do_manual(self.selected)
                 return True
         # 点节点 → 展开描述（不直接研究，避免误点）
         for tid, node in self._nodes.items():
@@ -374,6 +392,45 @@ class TechPanel:
                              btn.centery - t_.get_height() // 2))
             if clickable:
                 self._detail_btn.append((btn, "study"))
+
+            # 手动研究：直接吃背包里的科研包，不需要科研站/电（开局唯一路径）
+            can_man, _why = self._manual_ok(tech_id)
+            mbtn = pygame.Rect(d.right - 240, d.top + 10, 110, 26)
+            pygame.draw.rect(screen, (96, 78, 40) if can_man else (46, 46, 52),
+                             mbtn, border_radius=5)
+            pygame.draw.rect(screen, (190, 160, 80) if can_man else (66, 66, 74),
+                             mbtn, 2, border_radius=5)
+            mt = tiny.render("手动研究", True,
+                             (250, 240, 210) if can_man else (130, 132, 142))
+            screen.blit(mt, (mbtn.centerx - mt.get_width() // 2,
+                             mbtn.centery - mt.get_height() // 2))
+            if can_man:
+                self._detail_btn.append((mbtn, "manual"))
+
+    def _manual_ok(self, tech_id: str) -> tuple[bool, str]:
+        """能否手动研究：前置齐全 + 背包里有对应科研包。"""
+        t = self._tech
+        if t is None or tech_id in t.researched:
+            return False, "已完成"
+        if tech_id not in C.TECH_TREE:
+            return False, "不存在"
+        _, _, prereqs, _ = C.TECH_TREE[tech_id]
+        for p in prereqs:
+            if p not in t.researched:
+                return False, "前置未满足"
+        if t.current is not None and t.current != tech_id:
+            return False, "正在研究别的"
+        rid = C.TECH_PACK_RECIPE.get(tech_id)
+        r = C.RECIPES.get(rid) if rid else None
+        if r is None:
+            return False, "无科研包配方"
+        pack_item = next(iter(r[1]), None)
+        if pack_item is None:
+            return False, "配方无产物"
+        inv = getattr(self, "_inventory", None) or {}
+        if inv.get(pack_item, 0) <= 0:
+            return False, "背包里没有科研包"
+        return True, ""
 
     def _pack_name(self, tech_id: str) -> str:
         rid = C.TECH_PACK_RECIPE.get(tech_id)

@@ -91,6 +91,16 @@ class Simulation:
         """切星（轨道面板点击圆点）。"""
         self.activate_world(i)
 
+    @property
+    def world(self):
+        """当前激活的行星 WorldState。
+
+        注意：Simulation 以前**只有** `worlds` 列表，没有 `world`；
+        `sim.world` 会在长按采矿里直接 AttributeError（采矿必定崩）。
+        这里是唯一权威入口，别在前端自己拼 self.worlds[self.world_index]。
+        """
+        return self.worlds[self.world_index]
+
     def _on_belts_changed(self):
         self._belts_dirty = True
 
@@ -163,6 +173,26 @@ class Simulation:
             self.emit("achievement", f"研究完成：{name}", desc)
 
     # ---------- 背包 ----------
+
+    def manual_mine(self, gx: int, gy: int, amount: int = 1) -> int:
+        """手动采矿：从矿格挖 amount 个进背包，返回实际挖到的个数。
+
+        矿脉无限（grid.mine 不递减），所以这里只判断"是不是矿格"。
+        没有电、没有采矿机也能用——这是开局唯一免费的材料来源。
+        """
+        w = self.world
+        if w is None:
+            return 0
+        got = 0
+        for _ in range(max(1, int(amount))):
+            item = w.grid.mine(gx, gy)
+            if not item:
+                break
+            self.inventory[item] = self._count(item) + 1
+            got += 1
+        if got:
+            self._mark_dirty(gx, gy)
+        return got
 
     def _count(self, item: int) -> int:
         return self.inventory.get(item, 0)
@@ -506,6 +536,10 @@ class Simulation:
     def do_craft(self, rid: str, times: int) -> int:
         """把手搓任务排进队列，返回实际排进去的次数（材料不够会少排）。"""
         return self.craft.start(rid, times)
+
+    def manual_research(self, tech_id: str) -> tuple[bool, str]:
+        """手动研究：直接吃背包里的科研包，不需要科研站、不需要电。"""
+        return self.tech.manual_research(tech_id, self.inventory)
 
     def cancel_craft(self):
         self.craft.cancel()

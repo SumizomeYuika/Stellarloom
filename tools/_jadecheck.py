@@ -206,7 +206,7 @@ def main() -> int:
     cell_shot("belt", 260, 256, want_src="原版")
     cell_shot("inserter", 263, 256, want_src="原版")
     cell_shot("tower_body", 239, 244, want_src="原版")       # 塔身空位
-    cell_shot("core", 256, 256, want_src="原版")
+    cell_shot("core", 256, 254, want_src="原版")
 
     # ---- 电网（M9）：发电/电力塔信息 + 整网染色 ----
     pa = jade._power_net_at(g, 263, 252)   # 太阳能（电网 A）
@@ -254,10 +254,10 @@ def main() -> int:
     p_off = pygame.image.load(str(ov_off))
     same = lambda x, y: p_on.get_at((x, y)) == p_off.get_at((x, y))
     solar_px = (640 + 7 * 18 + 9, 360 - 4 * 18 + 9)          # 太阳能格(263,252)
-    core_px = (640 + 9, 360 + 9)                             # 核心格(256,256)
+    core_px = (640 + 9, 360 - 2 * 18 + 9)                    # 熔炉格(256,254)
     air_px = (640 - 8 * 18 + 9, 360 - 12 * 18 + 9)           # 无节点格(248,244)
     check(not same(*solar_px), "覆盖层开/关：太阳能格像素有差异（已染色）")
-    check(not same(*core_px), "覆盖层开/关：核心格像素有差异（同网同步染色）")
+    check(not same(*core_px), "覆盖层开/关：熔炉格像素有差异（同网同步染色）")
     check(same(*air_px), "覆盖层开/关：非电网格子像素一致（未误染）")
     ov_on.unlink()
     ov_off.unlink()

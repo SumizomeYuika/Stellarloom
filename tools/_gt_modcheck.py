@@ -148,6 +148,17 @@ def main() -> int:
     print("== 4. 科技锁 ==")
     sim = game.sim
     x, y = 60, 60
+    # M13.2：开局不再白送核心，测试机器要自己供电。这台风力足够整片测试
+    # 机器（粉碎机 20 + 离心 20 + 高炉 + 组装线），且与下面所有机器距离都
+    # 在并网范围内（无电力塔时全场一张网）。
+    sim.inventory[C.BUILD_ITEM[C.B_WIND]] = 8
+    for dx in range(6):
+        sim.place_building(C.B_WIND, x + dx, y - 1, 0)
+    sim.power.rebuild()
+    sim.power.update(0.1)
+    check("测试供电已铺（风力 6 台 = 240 kW）",
+          sim.power.last_supply >= 200.0,
+          f"supply={sim.power.last_supply:.1f}")
     sim.inventory[GT.I_GT_CRUSHER] = 3
     sim.inventory[GT.I_GT_FURNACE] = 3
     r = sim.place_building(GT.B_GT_CRUSHER, x, y, 0)

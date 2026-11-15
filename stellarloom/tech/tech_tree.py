@@ -91,6 +91,60 @@ class TechTree:
             self.progress = 0.0
             break
 
+    def manual_research(self, tech_id: str, inventory: dict) -> tuple[bool, str]:
+        """手动研究：直接吃背包里的科研包，不需要科研站、不需要电。
+
+        每次调用推进 1 点进度（扣 1 个科研包），够数即完成。
+        这是开局唯一的科技推进方式——没电时科研站转不起来。
+        """
+        if tech_id in self.researched:
+            return False, "已研究"
+        if tech_id not in C.TECH_TREE:
+            return False, "不存在"
+        # 前置必须全部完成（不能靠队列跳过，因为这是立刻生效的）
+        _, _, prereqs, _ = C.TECH_TREE[tech_id]
+        for p in prereqs:
+            if p not in self.researched:
+                return False, f"需要先研究 {C.TECH_TREE[p][0]}"
+        # 多条科技同时手动研究没有意义：同一时刻只允许一条
+        if self.current is not None and self.current != tech_id:
+            return False, f"正在研究 {C.TECH_TREE[self.current][0]}"
+        rid = C.TECH_PACK_RECIPE.get(tech_id)
+        if rid is None:
+            return False, "该科技没有科研包配方"
+        r = C.RECIPES.get(rid)
+        if r is None:
+            return False, "配方缺失"
+        pack_item = next(iter(r[1]), None)
+        if pack_item is None:
+            return False, "配方没有产物"
+        if inventory.get(pack_item, 0) <= 0:
+            return False, f"缺少 {C.ITEM_NAMES.get(pack_item, '科研包')}"
+        # 扣 1 个包，进度 +1
+        left = inventory[pack_item] - 1
+        if left > 0:
+            inventory[pack_item] = left
+        else:
+            inventory.pop(pack_item, None)
+        if self.current is None:
+            self.current = tech_id
+            self.progress = 0.0
+        _, cost, _, _ = C.TECH_TREE[tech_id]
+        self.progress += 1
+        if self.progress >= cost:
+            self.researched.add(tech_id)
+            self.current = None
+            self.progress = 0.0
+            while self.queue:
+                nxt = self.queue.pop(0)
+                if nxt in self.researched or nxt not in C.TECH_TREE:
+                    continue
+                self.current = nxt
+                self.progress = 0.0
+                break
+            return True, "研究完成"
+        return True, "进度 +1"
+
     def queue_count(self) -> int:
         return len(self.queue)
 

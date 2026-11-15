@@ -12,12 +12,26 @@ import pygame
 TAP_MAX_MS = 200
 TAP_MAX_MOVE = 10
 LONGPRESS_MS = 500
+# 长按已触发后允许的手指抖动（px）：触屏按住不放几乎必然轻微滑动，
+# 若还按 TAP_MAX_MOVE 判定，长按会被误降级成拖动，采矿永远采不出来。
+LONGPRESS_DRIFT = 24
 PINCH_MIN_DELTA = 8
 
 
 @dataclass
 class TapEvent:
     pos: tuple[float, float]
+
+
+@dataclass
+class LongPressEvent:
+    """长按（按住不动超过 LONGPRESS_MS）——手动采矿用。
+
+    held 表示这是持续触发（每帧一次，用于累加进度）；
+    released 表示手指抬起（用于结束本次长按）。
+    """
+    pos: tuple[float, float]
+    held: bool = True
 
 
 @dataclass
@@ -38,6 +52,35 @@ class GestureRecognizer:
         self.touches: dict[int, dict] = {}
         self._pinch_dist = 0.0
         self._pinch_center = (0.0, 0.0)
+
+    def poll_longpress(self) -> list:
+        """每帧调用一次：判断哪些手指已经按住超过 LONGPRESS_MS。
+
+        返回 LongPressEvent 列表（held=True）。只在第一次跨过阈值时输出一次，
+        后续由调用方用 `is_holding` 判断是否继续按住；抬起时输出 held=False。
+        """
+        out = []
+        now = pygame.time.get_ticks()
+        for tid, info in self.touches.items():
+            if info.get("moved"):
+                continue
+            if info.get("lp_done"):
+                continue
+            if now - info["t"] < LONGPRESS_MS:
+                continue
+            info["lp_done"] = True
+            out.append(LongPressEvent(info["pos"], True))
+        return out
+
+    def holding_pos(self):
+        """当前仍按在原地的长按手指位置；没有则 None。"""
+        for info in self.touches.values():
+            if info.get("lp_done") and not info.get("moved"):
+                return info["pos"]
+        return None
+
+    def is_holding(self) -> bool:
+        return self.holding_pos() is not None
 
     def handle(self, event: pygame.event.Event, screen_size) -> list:
         out = []
@@ -65,7 +108,9 @@ class GestureRecognizer:
             info["last"] = pos
             dx = pos[0] - info["start"][0]
             dy = pos[1] - info["start"][1]
-            if abs(dx) > TAP_MAX_MOVE or abs(dy) > TAP_MAX_MOVE:
+            # 长按已成立：抖动阈值放宽（否则触屏按住会被判成拖动，采矿中断）
+            limit = LONGPRESS_DRIFT if info.get("lp_done") else TAP_MAX_MOVE
+            if abs(dx) > limit or abs(dy) > limit:
                 info["moved"] = True
             if len(self.touches) == 2:
                 out.extend(self._pinch_motion())

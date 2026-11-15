@@ -52,7 +52,7 @@ def main():
     print("[1] 真实单位（kW）:")
     t(C.POWER_USAGE[C.B_ASSEMBLER] == 40.0, "制造台 40 kW")
     t(C.POWER_GEN[C.B_SOLAR] == 60.0, "太阳能 60 kW")
-    t(C.POWER_GEN[C.B_CORE] == 160.0, "核心 160 kW")
+    t(C.POWER_GEN.get(C.B_CORE) == 160.0, "核心 160 kW（仅旧档兼容发电）")
     t(fmt_power(40) == "40 kW" and fmt_power(1500) == "1.50 MW",
       f"格式化 {fmt_power(40)} / {fmt_power(1500)}")
 

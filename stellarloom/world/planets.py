@@ -32,7 +32,7 @@ class PlanetDef:
     eccentricity: float    # 偏心率（真实数据）
     arg_peri: float        # 近点辐角（度）
     angle0: float          # 开局平近点角（度）
-    has_core: bool         # 出生点是否有核心（保证开局有电）
+    has_core: bool         # 出生点是否预置核心（M13.2 起全部关闭：开局无电）
     ref: str = ""          # 参考的真实天体（文档/面板展示用）
 
     @property
@@ -54,14 +54,14 @@ PLANETS: list[PlanetDef] = [
         desc="你的出生地：铁铜石均衡，轨道接近正圆，昼夜平稳。",
         seed=42,
         a_au=1.00000, eccentricity=0.01671, arg_peri=0.0, angle0=0.0,
-        has_core=True, ref="地球",
+        has_core=False, ref="地球",
     ),
     PlanetDef(
         pid="ember", name="余烬星", color=(230, 120, 80),
         desc="殖民星：偏心的轨道让它离恒星忽远忽近，日照起伏剧烈。",
         seed=7,
         a_au=1.52371, eccentricity=0.09339, arg_peri=40.0, angle0=120.0,
-        has_core=True, ref="火星",
+        has_core=False, ref="火星",
     ),
 ]
 
