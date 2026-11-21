@@ -307,7 +307,9 @@ ctx.add_building("mymod:smelter", "熔炼塔",
   已经逐网取比例，mod 自己的建筑若要限速，用它即可。
 - 旧写法 `power.last_supply += 注电` 仍兼容：增量按 ×20 记成**全局注电**，
   再按各网需求比例摊派（gregtech_extra 的聚变反应堆就是这么接的）。
-- 全图一根电力塔都没有时退回旧版全球电网（旧档/小基地不至于全停电）。
+- **一律分区**（M14b）：没有"没铺电力塔就全球一张网"的兜底了。8 格内自动并网、
+  超了分网，想跨远必须铺电力塔。写自检时若要绕开电网拓扑（测配方/机器而已），
+  用官方测试钩子 `sim.power.force_ratio = 1.0`。
 
 ### 4.8 ctx.cfg / cfg_get / cfg_set / save_config（M6.29 统一配置）
 
@@ -354,10 +356,37 @@ ctx.on_event(on_ev)
   ——每帧跑，攒着不如在 mixin 里做批量逻辑。
 - `on_event` 收到的是 sim 事件流单条（kind 清单见第 6 节）。
 
+### 4.9b 液体（M14）
+
+液体是**独立 id 段**（0 = 空），不进背包、不上传送带、不进分拣器过滤列表。
+
+```python
+fid = ctx.add_fluid("mymod:sludge", "淤泥", "#556644")   # → 数字 id
+
+# 纯液体配方：原料/产物字典留空，液体用名字 + 数量（float）
+ctx.add_recipe("mymod:distill", {}, {}, 2.0, machines=(C.B_ASSEMBLER,),
+               fluid_inputs={"mymod:sludge": 10.0},
+               fluid_outputs={"stellarloom:petroleum": 5.0})
+
+# 混搭（物品 + 液体同一条配方）
+ctx.add_recipe("mymod:resin", {"stellarloom:stone": 2},
+               {"stellarloom:gear": 1}, 3.0, machines=(C.B_ASSEMBLER,),
+               fluid_inputs={"stellarloom:petroleum": 20.0})
+```
+
+- 机器**自动接管道**：四邻里只要有管道/储液罐，就按 `FLUID_MACHINE_DRAW=30/s`
+  抽原料液、按 `FLUID_MACHINE_PUSH=30/s` 排产物液；内部每种液体上限
+  `MACHINE_FLUID_CAP=100`。不需要分拣器，也不需要额外"液体入口"建筑。
+- 液体量是 **float**（不是整数个数）；`C.FLUID_NAMES` / `C.FLUID_COLORS` 是运行时视图。
+- 管网规则（玩家侧一致）：一格一种液体，不同液体互不流动；泵是无视压差的单向加压器。
+- `ctx.sim.fluid_at(x, y) -> (fid, 量, 容量)`，`ctx.sim.pipes` 是完整 `FluidNetwork`
+  （`amount_at` / `fid_at` / `total_of(fid)` / `fill_at` 都能调）。
+- `recipes.json` 也支持同样的字段：`"fluid_inputs": {"stellarloom:crude_oil": 100}`。
+
 ### 4.10 卸载时自动发生的事
 
 - 所有 `mixin` 补丁逆序还原为原方法。
-- 所有 `add_item` / `add_recipe` 注册被撤销（只清自己注册的）。
+- 所有 `add_item` / `add_recipe` / **`add_fluid`** 注册被撤销（只清自己注册的）。
 - **例外**：存档里已存在的 mod 物品 id 不会被抹掉——读回旧档后该 id
   显示为 "?"。这是"内容注册随卸载撤、存档数据永远在"的设计取舍。
 
@@ -379,6 +408,21 @@ ctx.on_event(on_ev)
 | `switch_planet` | `(i)` | — | 切行星（前端相机跟随由 Game 管） |
 | `ensure_world` / `activate_world` | `(i)` | — | 多行星内部操作，一般用不到 |
 | `pop_events` / `take_dirty_cells` | `()` | 列表 | 事件流 / 脏格（Game 消费，mod 用第 6 节钩子即可） |
+| `subscribe_events(fn)` / `subscribe_dirty(fn)` | `(fn)` | 取消函数 | M15a：旁路订阅（联机层用，不抢本地队列） |
+| `with_world(i)` | `(i)` | 上下文管理器 | M15a：临时切行星执行指令，退出还原 |
+| `set_machine_recipe` | `(gx, gy, rid 或 None)` | `"ok"/"no_machine"/"no_recipe"/"locked"` | 设机器配方（校验机型+科技） |
+| `machine_take_input` / `machine_add_input` | `(gx, gy, item, count=None)` | `int` | 机器原料槽取/放（放料自动扣背包） |
+| `machine_take_outputs` | `(gx, gy)` | `dict[int,int]` | 取机器全部产物到背包 |
+| `container_at` | `(gx, gy)` | `(kind, obj)` | 该格容器：chest/miner/emitter |
+| `container_take` / `container_put` | `(gx, gy, item, count=None)` | `int` | 箱子/采矿机/发射器统一取放 |
+| `lab_set_mode` / `lab_set_recipe` | `(gx, gy, mode/rid)` | `str` | 科研站模式/配方 |
+| `lab_take_item` / `lab_add_item` / `lab_take_outputs` | `(gx, gy, …)` | `int` / `dict` | 科研站取放 |
+| `set_tower_filter` | `(gx, gy, item 或 None)` | `str` | 塔过滤 |
+| `start_research` | `(tech_id)` | `(bool, str)` | 排研究队列（can_queue 语义，允许预排） |
+
+**M15a 铁律**：任何改变游戏状态的操作都必须经过 `sim` 指令。UI 面板已全部改走指令
+（`_cmdcheck` 会静态扫描 `stellarloom/ui/*.py` 拦截回退），联机时把面板的 `sim` 换成
+远程代理即可，面板代码零改动。
 
 只读速查：`sim.inventory`（dict int→int，**同源引用**，M6.26 后读档也保同源）、
 `sim.tech` / `sim.dyson` / `sim.worlds` / `sim.craft` / `sim.world_index`；

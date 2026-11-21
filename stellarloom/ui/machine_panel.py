@@ -29,11 +29,16 @@ class MachinePanel:
         self._picker_btn: list[tuple[pygame.Rect, str]] = []
         # 由 game 注入，用于过滤未解锁的配方
         self.researched: set[str] = set()
-        # 由 game 注入玩家背包，用于手动放料
+        # 由 game 注入玩家背包，用于手动放料（只读；写入一律走 sim 指令）
         self.inventory: dict[int, int] = {}
+        # M15a：面板的写操作全部经过 sim（联机时由服务端执行）
+        self.sim = None
         # 按钮区：(rect, 动作, 物品)  动作: take_input/take_all_out/put_input/put10
         self._btn_rects: list[tuple[pygame.Rect, str, int]] = []
         self._tab = "input"  # 当前显示哪一半的背包存取行
+        # 配方选择器的滚动（M14 修：配方多了以后原来直接截断，选不到后面的）
+        self.scroll = 0
+        self._scroll_acc = 0.0
 
     @property
     def open(self) -> bool:
@@ -61,6 +66,17 @@ class MachinePanel:
         self.machine = None
         self._picker = False
 
+    def scroll_by(self, dy_px: float):
+        """滚轮/拖动滚动配方列表（累积小数像素——拖动每帧只有几像素，
+        直接 //22 永远是 0，这就是"划不动"的老 bug）。"""
+        self._scroll_acc += float(dy_px)
+        # 用 int(a / 36) 而不是 //：向零截断，否则负方向会被 floor 拉成 -1，
+        # 累加器来回震荡、永远滚不动。
+        rows = int(self._scroll_acc / 36)
+        if rows:
+            self._scroll_acc -= rows * 36
+            self.scroll = max(0, self.scroll + rows)
+
     def hit(self, pos) -> bool:
         if self.machine is None:
             return False
@@ -71,12 +87,12 @@ class MachinePanel:
             for rect, rid in self._recipe_rects:
                 if rect.collidepoint(pos):
                     if rid is None:
-                        self.machine.set_recipe(None)
+                        self._set_recipe(None)
                     else:
                         req = C.RECIPE_TECH.get(rid)
                         if req and req not in self.researched:
                             return True  # 未解锁：点了没反应，不切换配方
-                        self.machine.set_recipe(rid)
+                        self._set_recipe(rid)
                     self._picker = False  # 选中即回主界面
                     self._btn_rects.clear()
                     return True
@@ -94,39 +110,33 @@ class MachinePanel:
                 return True
         return True  # 点在面板空白处也消费，不穿透
 
+    def _set_recipe(self, rid):
+        """设配方（M15a：走 sim 指令，不直接改机器对象）。"""
+        m = self.machine
+        if m is None or self.sim is None:
+            return
+        self.sim.set_machine_recipe(m.x, m.y, rid)
+
     def _do_action(self, action: str, item: int):
+        sim = self.sim
         m = self.machine
         if m is None:
             return
+        x, y = m.x, m.y
+        # M15a：面板不再直接改机器/背包——一律走 sim 指令，联机时服务端才是
+        # 唯一改状态的地方（单机时就是同一进程里立刻执行，行为不变）。
+        if sim is None:
+            return
         if action == "take1":
-            n = m.take_input(item, 1)
-            if n:
-                self.inventory[item] = self.inventory.get(item, 0) + n
+            sim.machine_take_input(x, y, item, 1)
         elif action == "takeall":
-            n = m.take_input(item, None)
-            if n:
-                self.inventory[item] = self.inventory.get(item, 0) + n
+            sim.machine_take_input(x, y, item, None)
         elif action == "put1":
-            self._put(item, 1)
+            sim.machine_add_input(x, y, item, 1)
         elif action == "put10":
-            self._put(item, 10)
+            sim.machine_add_input(x, y, item, 10)
         elif action == "takeout_all":
-            got = m.take_all_outputs()
-            for it, n in got.items():
-                self.inventory[it] = self.inventory.get(it, 0) + n
-
-    def _put(self, item: int, count: int):
-        have = self.inventory.get(item, 0)
-        if have <= 0:
-            return
-        n = self.machine.add_input(item, min(have, count))
-        if n <= 0:
-            return
-        left = have - n
-        if left > 0:
-            self.inventory[item] = left
-        else:
-            self.inventory.pop(item, None)
+            sim.machine_take_outputs(x, y)
 
     # ---------- 绘制 ----------
 
@@ -239,11 +249,39 @@ class MachinePanel:
                                   "takeout_all", 0)
                 y += 22
 
+        # ---- 液体槽（M14）：只有配方含液体才占位 ----
+        if getattr(m, "fneed", None) or getattr(m, "fout", None):
+            y += 8
+            self._draw_fluid_rows(screen, small, tiny, r, y)
+
         screen.blit(tiny.render("点面板外关闭", True, (100, 105, 120)),
                     (r.left + 14, r.bottom - 22))
 
+    def _draw_fluid_rows(self, screen, small, tiny, r, y):
+        """液体进料/产物条（M14）：颜色 + 名字 + 量/上限。自动接管道，无手动按钮。"""
+        m = self.machine
+        for label, store, need in (("进液", m.fluid_in, m.fneed),
+                                   ("出液", m.fluid_out, m.fout)):
+            screen.blit(small.render(f"{label}（自动接管道）", True, C.C_TEXT),
+                        (r.left + 14, y))
+            y += 18
+            if not need:
+                continue
+            for f in sorted(need):
+                have = store.get(f, 0.0)
+                col = C.FLUID_COLORS.get(f, C.FLUID_FALLBACK_COLOR)
+                pygame.draw.rect(screen, col, (r.left + 26, y + 3, 12, 12))
+                name = C.FLUID_NAMES.get(f, f"?{f}")
+                txt = (f"{name}  {have:.0f}/{C.MACHINE_FLUID_CAP:.0f}"
+                       f"  (配方 {need[f]:.0f})")
+                screen.blit(tiny.render(txt, True, C.C_TEXT), (r.left + 44, y))
+                y += 20
+
     def _draw_picker(self, screen, small, tiny):
-        """配方选择器：按机器类型列出已解锁配方（同合成面板风格）。"""
+        """配方选择器：按机器类型列出已解锁配方（同合成面板风格）。
+
+        列表可滚动：配方数量随 mod / 科技增长，一屏放不下时必须能划。
+        """
         m = self.machine
         r = self.rect
         self._recipe_rects.clear()
@@ -255,9 +293,15 @@ class MachinePanel:
 
         recipes = [None] + list(m.available_recipes(None))  # None = 无配方
         row_h = 32
-        for rid in recipes:
-            if y + row_h > r.bottom - 26:
-                break
+        step = row_h + 4
+        top = y
+        avail = (r.bottom - 26) - top
+        rows = max(1, avail // step)
+        max_scroll = max(0, len(recipes) - rows)
+        if self.scroll > max_scroll:
+            self.scroll = max_scroll
+        self.scroll = max(0, self.scroll)
+        for rid in recipes[self.scroll:self.scroll + rows]:
             row = pygame.Rect(r.left + 12, y, r.width - 24, row_h)
             is_cur = m.recipe_id == rid
             pygame.draw.rect(screen, (34, 40, 54), row, border_radius=6)
@@ -296,6 +340,13 @@ class MachinePanel:
                 screen.blit(tiny.render("√", True, (120, 200, 255)),
                             (row.right - 22, row.top + 8))
             y += row_h + 4
+
+        # 滚动位置提示（和手搓面板一致，玩家才知道还能划）
+        if len(recipes) > rows:
+            screen.blit(tiny.render(
+                f"滚动 {self.scroll + 1}-{min(self.scroll + rows, len(recipes))}"
+                f"/{len(recipes)}", True, (130, 160, 200)),
+                (r.right - 120, r.bottom - 22))
 
         screen.blit(tiny.render("点面板外关闭", True, (100, 105, 120)),
                     (r.left + 14, r.bottom - 22))

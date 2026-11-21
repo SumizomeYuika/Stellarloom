@@ -37,30 +37,76 @@ def _resolve_item(key) -> int:
         raise ValueError(f"配方引用了未注册物品 {key!r}（{e}）") from None
 
 
-def load_recipes() -> dict:
-    """读取 recipes.json，返回与旧版一模一样的配方 dict。
+def _resolve_fluid(key) -> int:
+    """液体 id（M14）：名字（stellarloom:crude_oil）或数字。"""
+    from ..registry import FLUID_REGISTRY
+    try:
+        return FLUID_REGISTRY.id_of(key)
+    except Exception as e:
+        raise ValueError(f"配方引用了未注册液体 {key!r}（{e}）") from None
 
-    坏 JSON / 缺字段 / 数量非法 / 引用未注册物品或建筑 → ValueError
-    启动即报（与 UI defs 同铁律，不静默）。machines 可省略（[] = 只能手搓）。
-    """
+
+def _load_raw() -> dict:
     try:
         raw = json.loads(RECIPES_JSON.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as e:
         raise ValueError(f"配方文件 recipes.json 解析失败: {e}") from None
     if not isinstance(raw, dict):
         raise ValueError("recipes.json 顶层必须是 dict")
+    return raw
+
+
+def load_recipes() -> dict:
+    """读取 recipes.json，返回与旧版一模一样的配方 dict。
+
+    坏 JSON / 缺字段 / 数量非法 / 引用未注册物品或建筑 → ValueError
+    启动即报（与 UI defs 同铁律，不静默）。machines 可省略（[] = 只能手搓）。
+
+    M14：允许"纯液体配方"（inputs/outputs 空，只有 fluid_inputs/fluid_outputs），
+    液体部分另由 load_recipe_fluids() 读（不塞进 4 元组，避免破坏解包）。
+    """
+    raw = _load_raw()
     out: dict = {}
     for rid, r in raw.items():
         if not isinstance(r, dict):
             raise ValueError(f"配方 {rid}: 必须是对象")
         try:
-            ins = {_resolve_item(k): int(v) for k, v in r["inputs"].items()}
-            outs = {_resolve_item(k): int(v) for k, v in r["outputs"].items()}
+            ins = {_resolve_item(k): int(v)
+                   for k, v in (r.get("inputs") or {}).items()}
+            outs = {_resolve_item(k): int(v)
+                    for k, v in (r.get("outputs") or {}).items()}
             dur = float(r["dur"])
         except (KeyError, TypeError, ValueError) as e:
             raise ValueError(f"配方 {rid}: inputs/outputs/dur 非法（{e}）") from None
-        if not ins or not outs or dur <= 0:
-            raise ValueError(f"配方 {rid}: inputs/outputs 不能空，dur 必须 > 0")
+        has_fluid = bool(r.get("fluid_inputs") or r.get("fluid_outputs"))
+        if (not ins or not outs) and not has_fluid:
+            raise ValueError(
+                f"配方 {rid}: inputs/outputs 不能空（除非是纯液体配方）")
+        if dur <= 0:
+            raise ValueError(f"配方 {rid}: dur 必须 > 0")
         machines = tuple(_resolve_building(m) for m in r.get("machines", []))
         out[rid] = (ins, outs, dur, machines)
+    return out
+
+
+def load_recipe_fluids() -> dict:
+    """读取 recipes.json 的液体部分（M14）：rid -> (输入液体, 输出液体)。
+
+    与 RECIPES 分离存放，所以 26 条既有配方的 4 元组解包完全不受影响。
+    """
+    raw = _load_raw()
+    out: dict = {}
+    for rid, r in raw.items():
+        if not isinstance(r, dict):
+            continue
+        fin_raw = r.get("fluid_inputs") or {}
+        fout_raw = r.get("fluid_outputs") or {}
+        if not fin_raw and not fout_raw:
+            continue
+        try:
+            fin = {_resolve_fluid(k): float(v) for k, v in fin_raw.items()}
+            fout = {_resolve_fluid(k): float(v) for k, v in fout_raw.items()}
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"配方 {rid}: 液体字段非法（{e}）") from None
+        out[rid] = (fin, fout)
     return out

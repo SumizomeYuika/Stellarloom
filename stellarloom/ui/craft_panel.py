@@ -58,8 +58,9 @@ class CraftPanel:
         self.queue = CraftQueue(self.inv)
         # 选中的产物物品 id（None = 还没选）
         self.sel_item: int | None = None
-        # 产物列表滚动偏移（行数）
+        # 产物列表滚动偏移（行数）+ 累积小数像素（拖动手势专用）
         self.scroll = 0
+        self._scroll_acc = 0.0
         # 点击区
         self._item_rects: list[tuple[pygame.Rect, int]] = []
         self._btn_rects: list[tuple[pygame.Rect, str]] = []  # make1/make10/cancel
@@ -150,8 +151,17 @@ class CraftPanel:
         return None
 
     def scroll_by(self, dy_px: float):
-        """滚轮/拖动滚动产物列表。"""
-        self.scroll = max(0, self.scroll + int(dy_px // 22))
+        """滚轮/拖动滚动产物列表。
+
+        拖动手势每帧只有几像素，直接 `dy // 22` 永远是 0（这就是"划不动"
+        的老 bug）——这里累积小数像素，够一行再滚。
+        """
+        self._scroll_acc += float(dy_px)
+        # int(a / 22) 向零截断；用 // 会让负方向被 floor 拉成 -1，累加器震荡
+        rows = int(self._scroll_acc / 22)
+        if rows:
+            self._scroll_acc -= rows * 22
+            self.scroll = max(0, self.scroll + rows)
 
     # ---------- 绘制 ----------
 

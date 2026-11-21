@@ -149,6 +149,9 @@ class ModContext:
         self._event_fns: list = []
         self._added_items: list[int] = []
         self._added_recipes: list[str] = []
+        # M14：液体相关注册（卸载时一并撤销）
+        self._added_fluids: list[str] = []
+        self._added_fluid_recipes: list[str] = []
         self._added_buildings: list[str] = []   # M8：注册的建筑名字 token
         self._added_building_items: list[int] = []  # M8：BUILD_ITEM 联动键
         # M6.29：统一配置（作者默认 config.json + 用户 mods/config/<name>.json）
@@ -352,29 +355,74 @@ class ModContext:
         self.log(f"注册物品 {rid} {token}")
 
     def add_recipe(self, rid: str, inputs: dict, outputs: dict,
-                   dur: float, machines: tuple = ()):
+                   dur: float, machines: tuple = (),
+                   fluid_inputs: dict | None = None,
+                   fluid_outputs: dict | None = None):
         """注册配方（M7 起原料/产物可用名字 "stellarloom:iron_ore" 或数字）。
-        machines = 能造的机器（建筑 id 元组，原版可写数字）。"""
+        machines = 能造的机器（建筑 id 元组，原版可写数字）。
+
+        M14：`fluid_inputs` / `fluid_outputs` 用液体名字（"stellarloom:crude_oil"）
+        → 液体量（float）。这条配方可以**只有液体**（inputs/outputs 传空 dict），
+        机器会自动从相邻管道抽料、把产物排回管道。
+        """
         if rid in C.RECIPES:
             raise ModAPIError(f"add_recipe: 配方 {rid} 已存在")
-        if not inputs or not outputs or dur <= 0:
+        has_fluid = bool(fluid_inputs) or bool(fluid_outputs)
+        if not has_fluid and (not inputs or not outputs):
             raise ModAPIError(f"add_recipe {rid}: inputs/outputs/dur 非法")
-        from .registry import ITEM_REGISTRY, BUILDING_REGISTRY, RegistryError
+        if dur <= 0:
+            raise ModAPIError(f"add_recipe {rid}: dur 必须 > 0")
+        from .registry import (ITEM_REGISTRY, BUILDING_REGISTRY,
+                               FLUID_REGISTRY, RegistryError)
         try:
             ins = {ITEM_REGISTRY.id_of(k): int(v)
-                   for k, v in inputs.items()}
+                   for k, v in (inputs or {}).items()}
             outs = {ITEM_REGISTRY.id_of(k): int(v)
-                    for k, v in outputs.items()}
+                    for k, v in (outputs or {}).items()}
         except RegistryError as e:
             raise ModAPIError(f"add_recipe {rid}: {e}") from None
         try:
             machines = tuple(BUILDING_REGISTRY.id_of(m) for m in machines)
         except RegistryError as e:
             raise ModAPIError(f"add_recipe {rid}: machines {e}") from None
+        fin: dict = {}
+        fout: dict = {}
+        try:
+            fin = {FLUID_REGISTRY.id_of(k): float(v)
+                   for k, v in (fluid_inputs or {}).items()}
+            fout = {FLUID_REGISTRY.id_of(k): float(v)
+                    for k, v in (fluid_outputs or {}).items()}
+        except RegistryError as e:
+            raise ModAPIError(f"add_recipe {rid}: 液体 {e}") from None
         # 4 元组与原版一致：(原料, 产物, 单件耗时, 可制造的机器列表)
         C.RECIPES[rid] = (ins, outs, float(dur), machines)
+        if fin or fout:
+            C.RECIPE_FLUIDS[rid] = (fin, fout)
         self._added_recipes.append(rid)
-        self.log(f"注册配方 {rid}")
+        if fin or fout:
+            self._added_fluid_recipes.append(rid)
+        self.log(f"注册配方 {rid}"
+                 + ("（含液体）" if (fin or fout) else ""))
+
+    def add_fluid(self, name, display=None, color=None) -> int:
+        """注册一种液体（M14）。name 用命名空间（"mymod:sludge"）。
+
+        返回数字 id。液体是独立 id 段：不进背包、不上传送带、
+        不进分拣器过滤列表；配方用 add_recipe(fluid_inputs=...) 引用。
+        """
+        from .registry import FLUID_REGISTRY, RegistryError
+        if not isinstance(name, str) or ":" not in name:
+            raise ModAPIError(
+                f"add_fluid: 名字必须是 命名空间:名字，收到 {name!r}")
+        try:
+            fid = FLUID_REGISTRY.dynamic_register(
+                name, display or name.split(":", 1)[1],
+                _hex(color) if color else None)
+        except RegistryError as e:
+            raise ModAPIError(f"add_fluid {name}: {e}") from None
+        self._added_fluids.append(name)
+        self.log(f"注册液体 {name} → id {fid}")
+        return fid
 
     def add_building(self, btype, name=None, item=None):
         """注册建筑类型（M8 建筑注册表）。
@@ -446,6 +494,13 @@ class ModContext:
         for rid in self._added_recipes:
             C.RECIPES.pop(rid, None)
         self._added_recipes.clear()
+        for rid in self._added_fluid_recipes:
+            C.RECIPE_FLUIDS.pop(rid, None)
+        self._added_fluid_recipes.clear()
+        from .registry import FLUID_REGISTRY
+        for token in self._added_fluids:
+            FLUID_REGISTRY.unregister(token)
+        self._added_fluids.clear()
         # M8：建筑注册还原（含 BUILD_ITEM 联动）
         from .registry import BUILDING_REGISTRY
         for token in self._added_buildings:

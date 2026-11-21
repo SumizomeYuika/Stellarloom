@@ -56,16 +56,34 @@ def main():
     t(fmt_power(40) == "40 kW" and fmt_power(1500) == "1.50 MW",
       f"格式化 {fmt_power(40)} / {fmt_power(1500)}")
 
-    # ---------- 2. 无电力塔：退回全球一张网（旧档兼容） ----------
-    print("[2] 无塔 = 旧全球电网:")
+    # ---------- 2. 没有电力塔也照样分区（M14b：废除全球一张网的兼容） ----------
+    print("[2] 无塔也按 8 格分区:")
     sim = fresh()
     ax, ay = find_empty(sim, (60, 60))
     sim.grid.place(ax, ay, C.B_ASSEMBLER)
     sim.power.rebuild()
     sim.power.update(0.1)
-    t(sim.power._legacy, "没有电力塔 → legacy=True")
-    t(abs(sim.power.factor_at(ax, ay) - sim.power.last_ratio) < 1e-9,
-      f"因子 = 全球比例 {sim.power.last_ratio:.2f}")
+    t(not hasattr(sim.power, "_legacy") or not sim.power._legacy,
+      "不再有 legacy 兼容分支")
+    # 孤零零一台制造台：自己一张网、没发电 → 0（不再白蹭全球比例）
+    t(sim.power.factor_at(ax, ay) == 0.0,
+      f"孤立耗电网络没有电 {sim.power.factor_at(ax, ay):.2f}")
+    # 旁边 3 格放一台风机（8 格内）→ 自动并网，不需要电力塔
+    bx, by = ax + 3, ay
+    sim.grid.place(bx, by, C.B_WIND)
+    sim.power.rebuild()
+    sim.power.update(0.1)
+    t(sim.power.factor_at(ax, ay) >= 0.99,
+      f"3 格外的风机自动并网 → {sim.power.factor_at(ax, ay):.2f}")
+    # 超过 8 格 → 自动分成两张网
+    cx, cy = find_empty(sim, (ax + 30, ay))
+    sim.grid.place(cx, cy, C.B_ASSEMBLER)
+    sim.power.rebuild()
+    sim.power.update(0.1)
+    t(sim.power.factor_at(cx, cy) == 0.0,
+      f"30 格外的制造台另成一网且缺电 {sim.power.factor_at(cx, cy):.2f}")
+    t(sim.power.net_count >= 2, f"自动分成 {sim.power.net_count} 张网")
+    t(sim.power.starved_nets() >= 1, "starved_nets 能报出缺电网")
 
     # ---------- 3. 有塔：两张互不相连的网 ----------
     print("[3] 分区：两张网互不借电:")
@@ -81,7 +99,6 @@ def main():
     sim.grid.place(x2 + 3, y2, C.B_ASSEMBLER)
     sim.power.rebuild()
     sim.power.update(0.1)
-    t(not sim.power._legacy, "有塔 → 真电网")
     t(sim.power.net_count >= 2, f"分成 {sim.power.net_count} 张网（含出生核心）")
     fa = sim.power.factor_at(x1 + 6, y1)
     fb = sim.power.factor_at(x2 + 3, y2)

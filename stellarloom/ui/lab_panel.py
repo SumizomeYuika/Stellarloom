@@ -22,6 +22,8 @@ class LabPanel:
         self.defs = uidef.load_def("lab_panel.json")
         self.lab = None
         self.labs = None       # LabNetwork
+        # M15a：写操作走 sim 指令（联机时由服务端执行）
+        self.sim = None
         self.cell = (0, 0)
         self.rect = pygame.Rect(0, 0, 440, 580)
         self.inventory: dict[int, int] = {}
@@ -59,14 +61,14 @@ class LabPanel:
         # 静态控件（模式切换按钮，定义在 defs JSON）
         cid = uidef.hit_control(self.defs, self.rect, pos)
         if cid == "mode_r":
-            self.labs.set_mode(x, y, C.LAB_MODE_RESEARCH)
+            self._cmd("lab_set_mode", C.LAB_MODE_RESEARCH)
             return True
         if cid == "mode_p":
-            self.labs.set_mode(x, y, C.LAB_MODE_PRODUCE)
+            self._cmd("lab_set_mode", C.LAB_MODE_PRODUCE)
             return True
         for rect, rid in self._rec:
             if rect.collidepoint(pos):
-                self.labs.set_recipe(x, y, rid)
+                self._cmd("lab_set_recipe", rid)
                 return True
         for rect, action, item in self._btn:
             if rect.collidepoint(pos):
@@ -74,42 +76,32 @@ class LabPanel:
                 return True
         return True
 
-    def _do(self, action: str, item: int):
+    def _cmd(self, name: str, *args):
+        """M15a：面板写操作统一走 sim 指令（联机时由服务端执行）。"""
+        sim = self.sim
+        if sim is None:
+            return None
         x, y = self.cell
-        labs = self.labs
-        if action == "mode_r":
-            labs.set_mode(x, y, C.LAB_MODE_RESEARCH)
-        elif action == "mode_p":
-            labs.set_mode(x, y, C.LAB_MODE_PRODUCE)
-        elif action == "t1":
-            n = labs.take_item(x, y, item, 1)
-            if n:
-                self.inventory[item] = self.inventory.get(item, 0) + n
-        elif action == "tall":
-            n = labs.take_item(x, y, item, None)
-            if n:
-                self.inventory[item] = self.inventory.get(item, 0) + n
-        elif action == "p1":
-            self._put(item, 1)
-        elif action == "p10":
-            self._put(item, 10)
-        elif action == "out_all":
-            got = labs.take_outputs(x, y)
-            for it, n in got.items():
-                self.inventory[it] = self.inventory.get(it, 0) + n
+        fn = getattr(sim, name, None)
+        if fn is None:
+            return None
+        return fn(x, y, *args)
 
-    def _put(self, item: int, count: int):
-        have = self.inventory.get(item, 0)
-        if have <= 0:
-            return
-        n = self.labs.add_item(self.cell[0], self.cell[1], item, min(have, count))
-        if n <= 0:
-            return
-        left = have - n
-        if left > 0:
-            self.inventory[item] = left
-        else:
-            self.inventory.pop(item, None)
+    def _do(self, action: str, item: int):
+        if action in ("mode_r", "mode_p"):
+            self._cmd("lab_set_mode",
+                      C.LAB_MODE_RESEARCH if action == "mode_r"
+                      else C.LAB_MODE_PRODUCE)
+        elif action == "t1":
+            self._cmd("lab_take_item", item, 1)
+        elif action == "tall":
+            self._cmd("lab_take_item", item, None)
+        elif action == "p1":
+            self._cmd("lab_add_item", item, 1)
+        elif action == "p10":
+            self._cmd("lab_add_item", item, 10)
+        elif action == "out_all":
+            self._cmd("lab_take_outputs")
 
     # ---------- 绘制 ----------
 

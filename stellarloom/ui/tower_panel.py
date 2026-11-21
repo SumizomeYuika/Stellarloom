@@ -24,6 +24,8 @@ class TowerPanel:
         self.rect = pygame.Rect(0, 0, 320, 280)
         # 物品图标区域（点击切换过滤）
         self._item_rects: list[tuple[pygame.Rect, int]] = []
+        # M15a：写操作走 sim 指令（联机时服务端执行）
+        self.sim = None
 
     @property
     def open(self) -> bool:
@@ -51,13 +53,15 @@ class TowerPanel:
             # 点外部 → 关闭
             self.close()
             return True
-        # 点物品图标 → 切换过滤
+        # 点物品图标 → 切换过滤（M15a：走 sim 指令，不直接改 Tower 对象）
         for rect, item_id in self._item_rects:
             if rect.collidepoint(pos):
-                if self.tower.filter == item_id:
-                    self.tower.filter = None
+                cur = self.tower.filter
+                new = None if cur == item_id else item_id
+                if self.sim is not None:
+                    self.sim.set_tower_filter(self.tower.x, self.tower.y, new)
                 else:
-                    self.tower.filter = item_id
+                    self.tower.filter = new
                 return True
         return True  # 点在面板空白处也消费掉，不穿透
 

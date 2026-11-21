@@ -91,7 +91,13 @@ def main():
     print("[4] 通电变轨：半长轴/周期/光照/温度:")
     sim.inventory[C.I_PLANET_ENGINE_ITEM] = sim._count(C.I_PLANET_ENGINE_ITEM) + 1
     sim.place_engine(10, 10)
-    sim.power.last_ratio = 1.0
+    # M14b：电网强制按 8 格分区，孤零零一台引擎没有网 → 必须真的供电。
+    # 引擎 800 kW，这里 6 格内铺 20 台风机（40 kW × 20 = 800 kW）验证真并网。
+    for i in range(20):
+        wx, wy = 5 + i % 5, 5 + i // 5
+        sim.grid.place(wx, wy, C.B_WIND)
+    sim.power.rebuild()
+    sim.power.update(0.0)
     t(sim.engine_powered(), "通电后 engine_powered=True")
     base = sim.orbit_base_a()
     p = sim.planet

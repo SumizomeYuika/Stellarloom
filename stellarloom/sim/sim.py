@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+import contextlib
+
 import numpy as np
 
 from .. import config as C
@@ -50,6 +52,9 @@ class Simulation:
         self._events: list[tuple] = []
         # 脏格子：本帧内逻辑改动过的格子，前端据此刷新 chunk 缓存
         self._dirty_cells: list[tuple[int, int]] = []
+        # M15a：旁路订阅者（联机服务端要和本地渲染同时拿到事件/脏格）
+        self._event_sinks: list = []
+        self._dirty_sinks: list = []
 
     # ---------- 世界 ----------
 
@@ -85,6 +90,7 @@ class Simulation:
         self.drones = ws.drones
         self.pads = ws.pads
         self.labs = ws.labs
+        self.pipes = ws.pipes
         self.dyson.grid = ws.grid
 
     def switch_planet(self, i: int):
@@ -107,7 +113,21 @@ class Simulation:
     # ---------- 事件流 ----------
 
     def emit(self, kind: str, *payload):
-        self._events.append((kind, *payload))
+        ev = (kind, *payload)
+        self._events.append(ev)
+        # M15a：除了本地队列，再 fan-out 给订阅者（联机服务端要拿同一份事件，
+        # 不能跟渲染抢 pop_events 的唯一消费者地位）
+        for sink in self._event_sinks:
+            try:
+                sink(ev)
+            except Exception:
+                pass
+
+    def subscribe_events(self, sink):
+        """注册事件旁路（网络层用）。返回取消函数。"""
+        self._event_sinks.append(sink)
+        return lambda: (self._event_sinks.remove(sink)
+                        if sink in self._event_sinks else None)
 
     def pop_events(self) -> list[tuple]:
         """取走并清空事件。事件：(kind, *payload)，kind ∈ {"toast","achievement"}。"""
@@ -119,8 +139,39 @@ class Simulation:
         out, self._dirty_cells = self._dirty_cells, []
         return out
 
+    def subscribe_dirty(self, sink):
+        """注册脏格旁路（M15a：网络层要独立拿到脏格，不能和渲染抢）。"""
+        self._dirty_sinks.append(sink)
+        return lambda: (self._dirty_sinks.remove(sink)
+                        if sink in self._dirty_sinks else None)
+
     def _mark_dirty(self, gx: int, gy: int):
         self._dirty_cells.append((gx, gy))
+        if self._dirty_sinks:
+            for sink in self._dirty_sinks:
+                try:
+                    sink(gx, gy)
+                except Exception:
+                    pass
+
+    # ---------- M15a：指令层的世界作用域 ----------
+
+    @contextlib.contextmanager
+    def with_world(self, index: int):
+        """临时切到第 index 颗行星执行一条指令，退出时还原。
+
+        联机时指令带 world_index；`activate_world` 会改一大堆全局态，
+        必须包一层再还原，否则服务端处理 A 行星的指令会污染 B 行星。
+        """
+        if not (0 <= index < len(self.worlds)) or index == self.world_index:
+            yield self
+            return
+        prev = self.world_index
+        self.activate_world(index)
+        try:
+            yield self
+        finally:
+            self.activate_world(prev)
 
     # ---------- 推进 ----------
 
@@ -136,11 +187,14 @@ class Simulation:
             self.pads.sync(self.fleet, self.world_index)
             self.labs.sync()
             self.dyson.sync()
+            self.pipes.invalidate()
 
         prev_researched = set(self.tech.researched)
         self.power.update(dt)
         sf = self.power.speed_factor
         self.belts.update(dt * sf * self.tech.belt_speed_multiplier())
+        # M14：液体先均流/泵送，机器再抽料排料（顺序决定"本帧抽到的是本帧的液")
+        self.pipes.update(dt, self.power)
         self.machines.update(dt, self.power)
         self.miners.update(dt * sf if sf < 1.0 else dt, self.belts)
         for cx, cy in self.miners.pop_dirty_cells():
@@ -519,6 +573,12 @@ class Simulation:
                         if n > 0:
                             self.inventory[item] = self._count(item) + n
                     em.store.clear()
+            elif btype in (C.B_FURNACE, C.B_ASSEMBLER):
+                pass
+            # M14：拆管道/储罐时把里面的液体**先泼给相邻管网**，泼不完才丢，
+            # 免得拆一格罐子凭空蒸发 2500 单位
+            if btype in C.FLUID_CELL_BUILDINGS:
+                self._spill_fluid(gx, gy)
             if self.grid.remove(gx, gy):
                 self._refund_building(btype)
                 self._mark_dirty(gx, gy)
@@ -531,6 +591,248 @@ class Simulation:
                 self._mark_dirty(gx, gy)
         return False, None
 
+    # ---------- 液体（M14） ----------
+
+    def _spill_fluid(self, gx: int, gy: int):
+        """拆掉液体格前，把里面的液体泼给四邻（泼不完的才丢）。
+
+        没有这一步的话，拆一格满储罐就等于凭空销毁 2500 单位液体。
+        """
+        try:
+            amt = self.pipes.amount_at(gx, gy)
+            fid = self.pipes.fid_at(gx, gy)
+        except Exception:
+            return
+        if amt <= C.FLUID_EPS or fid == 0:
+            return
+        w, h = self.grid.w, self.grid.h
+        for d in range(4):
+            if amt <= C.FLUID_EPS:
+                break
+            nx = (gx + C.DX[d]) % w
+            ny = (gy + C.DY[d]) % h
+            if int(self.grid.building[ny, nx]) in C.FLUID_CELL_BUILDINGS:
+                amt -= self.pipes.fill_at(nx, ny, fid, amt)
+        # 剩下泼不掉的：直接清零（拆之前先清掉，避免 rebuild 时按坐标搬回来）
+        self.pipes.amount_clear(gx, gy)
+
+    def fluid_at(self, gx: int, gy: int) -> tuple[int, float, float]:
+        """(液体 id, 液量, 容量)——点击/面板/HUD 用。"""
+        return (self.pipes.fid_at(gx, gy), self.pipes.amount_at(gx, gy),
+                self.pipes.cap_at(gx, gy))
+
+    # ---------- M15a：面板写入指令（联机前置） ----------
+    # 所有"面板改机器/箱子/科研站/塔"的动作都必须走这里：
+    # 联机时 UI 只是发指令，服务端才是唯一改状态的地方。
+    # 返回码与放置指令同风格："ok" / "no_machine" / "no_item" / "locked" / ...
+
+    def _give_item(self, item: int, n: int) -> int:
+        """把 n 个物品塞进背包（n<=0 忽略）。返回实际塞入量。"""
+        n = int(n)
+        if n <= 0:
+            return 0
+        self.inventory[item] = self._count(item) + n
+        return n
+
+    def _machine_at(self, gx: int, gy: int):
+        return self.machines.get_machine(gx, gy)
+
+    def set_machine_recipe(self, gx: int, gy: int, rid: str | None) -> str:
+        """给机器设配方（None = 不生产）。科技/机型不匹配会被拒。"""
+        m = self._machine_at(gx, gy)
+        if m is None:
+            return "no_machine"
+        if rid is not None:
+            if rid not in C.RECIPES:
+                return "no_recipe"
+            allows = C.RECIPES[rid][3]
+            if allows and m.btype not in allows:
+                return "no_recipe"
+            req = C.RECIPE_TECH.get(rid)
+            if req and not self.tech.is_unlocked(req):
+                return "locked"
+        m.set_recipe(rid)
+        self._mark_dirty(gx, gy)
+        return "ok"
+
+    def machine_take_input(self, gx: int, gy: int, item: int,
+                           count: int | None = None) -> int:
+        """从机器原料槽取出到背包，返回实际取出数。"""
+        m = self._machine_at(gx, gy)
+        if m is None:
+            return 0
+        n = m.take_input(item, count)
+        self._give_item(item, n)
+        return n
+
+    def machine_add_input(self, gx: int, gy: int, item: int,
+                          count: int | None = None,
+                          from_inventory: bool = True) -> int:
+        """把背包里的原料放进机器，返回实际放入数（超出配方需求会被拒）。"""
+        m = self._machine_at(gx, gy)
+        if m is None:
+            return 0
+        want = self._count(item) if from_inventory else int(count or 0)
+        if want <= 0:
+            return 0
+        n = m.add_input(item, min(want, int(count if count else want)))
+        if n <= 0:
+            return 0
+        if from_inventory:
+            left = want - n
+            if left > 0:
+                self.inventory[item] = left
+            else:
+                self.inventory.pop(item, None)
+        return n
+
+    def machine_take_outputs(self, gx: int, gy: int) -> dict[int, int]:
+        """取出机器全部产物到背包，返回 {item: n}。"""
+        m = self._machine_at(gx, gy)
+        if m is None:
+            return {}
+        got = m.take_all_outputs()
+        for it, n in got.items():
+            self._give_item(it, n)
+        return got
+
+    # ---------- 箱子 / 采矿机 / 发射器（统一容器指令） ----------
+
+    def container_at(self, gx: int, gy: int):
+        """该格上的可搬运容器：(kind, obj)，kind ∈ chest/miner/emitter。
+
+        箱子、采矿机、发射器的背包读写接口同名（add_item/take_item），
+        所以面板只要发 container_take/container_put，联机时也只传一种指令。
+        """
+        ch = self.chests.get(gx, gy)
+        if ch is not None:
+            return "chest", ch
+        mn = self.miners.get(gx, gy)
+        if mn is not None:
+            return "miner", mn
+        em = self.dyson.get(gx, gy)
+        if em is not None:
+            return "emitter", em
+        return None, None
+
+    def chest_take(self, gx: int, gy: int, item: int,
+                   count: int | None = None) -> int:
+        ch = self.chests.get(gx, gy)
+        if ch is None:
+            return 0
+        n = ch.take_item(item, count)
+        self._give_item(item, n)
+        return n
+
+    def chest_put(self, gx: int, gy: int, item: int,
+                  count: int | None = None) -> int:
+        ch = self.chests.get(gx, gy)
+        if ch is None:
+            return 0
+        have = self._count(item)
+        if have <= 0:
+            return 0
+        n = ch.add_item(item, min(have, int(count or have)))
+        if n <= 0:
+            return 0
+        left = have - n
+        if left > 0:
+            self.inventory[item] = left
+        else:
+            self.inventory.pop(item, None)
+        return n
+
+    def container_take(self, gx: int, gy: int, item: int,
+                       count: int | None = None) -> int:
+        """从该格容器（箱子/采矿机/发射器）取物品到背包。"""
+        _kind, obj = self.container_at(gx, gy)
+        if obj is None:
+            return 0
+        n = obj.take_item(item, count)
+        self._give_item(item, n)
+        return n
+
+    def container_put(self, gx: int, gy: int, item: int,
+                      count: int | None = None) -> int:
+        """把背包物品放进该格容器。"""
+        _kind, obj = self.container_at(gx, gy)
+        if obj is None:
+            return 0
+        have = self._count(item)
+        if have <= 0:
+            return 0
+        n = obj.add_item(item, min(have, int(count or have)))
+        if n <= 0:
+            return 0
+        left = have - n
+        if left > 0:
+            self.inventory[item] = left
+        else:
+            self.inventory.pop(item, None)
+        return n
+
+    # ---------- 科研站 ----------
+
+    def lab_exists(self, gx: int, gy: int) -> bool:
+        return self.labs.get_lab(gx, gy) is not None
+
+    def lab_set_mode(self, gx: int, gy: int, mode: str) -> str:
+        if self.labs.get_lab(gx, gy) is None:
+            return "no_lab"
+        if mode not in (C.LAB_MODE_RESEARCH, C.LAB_MODE_PRODUCE):
+            return "bad_mode"
+        self.labs.set_mode(gx, gy, mode)
+        self._mark_dirty(gx, gy)
+        return "ok"
+
+    def lab_set_recipe(self, gx: int, gy: int, rid: str | None) -> str:
+        lab = self.labs.get_lab(gx, gy)
+        if lab is None:
+            return "no_lab"
+        if rid is not None and rid not in C.LAB_PRODUCE_RECIPES:
+            return "no_recipe"
+        self.labs.set_recipe(gx, gy, rid)
+        self._mark_dirty(gx, gy)
+        return "ok"
+
+    def lab_take_item(self, gx: int, gy: int, item: int,
+                      count: int | None = None) -> int:
+        n = self.labs.take_item(gx, gy, item, count)
+        self._give_item(item, n)
+        return n
+
+    def lab_add_item(self, gx: int, gy: int, item: int,
+                     count: int | None = None) -> int:
+        have = self._count(item)
+        if have <= 0:
+            return 0
+        n = self.labs.add_item(gx, gy, item, min(have, int(count or have)))
+        if n <= 0:
+            return 0
+        left = have - n
+        if left > 0:
+            self.inventory[item] = left
+        else:
+            self.inventory.pop(item, None)
+        return n
+
+    def lab_take_outputs(self, gx: int, gy: int) -> dict[int, int]:
+        got = self.labs.take_outputs(gx, gy)
+        for it, n in got.items():
+            self._give_item(it, n)
+        return got
+
+    # ---------- 物流塔 ----------
+
+    def set_tower_filter(self, gx: int, gy: int, item: int | None) -> str:
+        """设置塔的过滤物品（None = 不过滤）。"""
+        t = self.towers.get_tower(gx, gy)
+        if t is None:
+            return "no_tower"
+        t.filter = None if not item else int(item)
+        self._mark_dirty(t.x, t.y)
+        return "ok"
+
     # ---------- 指令：手搓 ----------
 
     def do_craft(self, rid: str, times: int) -> int:
@@ -540,6 +842,17 @@ class Simulation:
     def manual_research(self, tech_id: str) -> tuple[bool, str]:
         """手动研究：直接吃背包里的科研包，不需要科研站、不需要电。"""
         return self.tech.manual_research(tech_id, self.inventory)
+
+    def start_research(self, tech_id: str) -> tuple[bool, str]:
+        """把科技排进研究队列（M15a：科技面板不再直接改 TechTree）。
+
+        用 can_queue 而不是 can_research：允许"前置还在队列里"的预排计划。
+        """
+        ok, why = self.tech.can_queue(tech_id)
+        if not ok:
+            return False, why
+        self.tech.start(tech_id)
+        return True, "已加入研究"
 
     def cancel_craft(self):
         self.craft.cancel()

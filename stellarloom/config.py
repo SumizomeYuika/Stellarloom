@@ -1,7 +1,8 @@
 """全局配置常量。"""
 
-from .data import load_recipes  # noqa: E402
-from .registry import ITEM_REGISTRY, BUILDING_REGISTRY, VANILLA  # noqa: E402
+from .data import load_recipes, load_recipe_fluids  # noqa: E402
+from .registry import (ITEM_REGISTRY, BUILDING_REGISTRY, FLUID_REGISTRY,
+                       VANILLA)  # noqa: E402
 
 # 窗口
 WINDOW_WIDTH = 1280
@@ -53,6 +54,10 @@ _VANILLA_BUILDINGS = [
     (14, "launch_pad",    "发射台"),
     (15, "planet_engine", "行星引擎"),
     (16, "power_pole",    "电力塔"),
+    # M14 液体系统（17-19）：每格独立液量 + 限速均流 + 泵单向加压
+    (17, "pipe",          "管道"),
+    (18, "tank",          "储液罐"),
+    (19, "fluid_pump",    "液体泵"),
 ]
 for _bid, _bkey, _bdisp in _VANILLA_BUILDINGS:
     BUILDING_REGISTRY.fixed_register(_bid, f"{VANILLA}:{_bkey}", _bdisp)
@@ -74,6 +79,9 @@ B_EMITTER = BUILDING_REGISTRY.id_of("stellarloom:emitter")
 B_LAUNCH_PAD = BUILDING_REGISTRY.id_of("stellarloom:launch_pad")
 B_PLANET_ENGINE = BUILDING_REGISTRY.id_of("stellarloom:planet_engine")
 B_POWER_POLE = BUILDING_REGISTRY.id_of("stellarloom:power_pole")
+B_PIPE = BUILDING_REGISTRY.id_of("stellarloom:pipe")
+B_TANK = BUILDING_REGISTRY.id_of("stellarloom:tank")
+B_FLUID_PUMP = BUILDING_REGISTRY.id_of("stellarloom:fluid_pump")
 
 # 网格空位标记（building 数组 0 = 空）
 B_EMPTY = 0
@@ -113,7 +121,19 @@ POWER_USAGE = {
     B_EMITTER: 30.0,
     B_LAUNCH_PAD: 60.0,
     B_PLANET_ENGINE: 800.0,  # 行星引擎：大件，驱动整颗行星变轨
+    B_FLUID_PUMP: 20.0,     # 液体泵（M14）：单向加压输送
 }
+
+# ---------------- 液体（M14）----------------
+# 模型：每格独立液量（不做整段共享），相邻格按压差限速互流，泵单向加压。
+PIPE_CELL_CAP = 100.0        # 一格管道装多少单位液体
+TANK_CELL_CAP = 2500.0       # 一格储液罐（同一个数组，只是容量大）
+PIPE_FLOW_RATE = 60.0        # 相邻两格之间每秒最多输运多少（压力差再大也就这么快）
+PUMP_FLOW_RATE = 300.0       # 泵每秒输运上限（相当于 5 根直管）
+FLUID_MACHINE_DRAW = 30.0    # 机器每秒从邻格抽多少
+FLUID_MACHINE_PUSH = 30.0    # 机器每秒往邻格排多少
+MACHINE_FLUID_CAP = 100.0    # 机器内部每种液体最多囤多少
+FLUID_EPS = 1e-3             # 小于这个量视作空（防浮点尾巴）
 
 # 发电（kW）
 # B_CORE 是**遗留发电**：M13.2 起新开局不再预置核心，但旧存档里已经摆下的
@@ -165,6 +185,10 @@ _VANILLA_ITEMS = [
     (113, "launch_pad",   "发射台",   (110, 170, 230)),
     (114, "planet_engine","行星引擎", (150, 220, 190)),
     (115, "power_pole",   "电力塔",   (205, 180, 120)),
+    # M14 液体建筑
+    (116, "pipe",         "管道",     (110, 125, 145)),
+    (117, "tank",         "储液罐",   (150, 160, 175)),
+    (118, "fluid_pump",   "液体泵",   (120, 200, 200)),
 ]
 for _iid, _key, _disp, _col in _VANILLA_ITEMS:
     ITEM_REGISTRY.fixed_register(_iid, f"{VANILLA}:{_key}", _disp, _col)
@@ -200,6 +224,9 @@ I_EMITTER_ITEM = ITEM_REGISTRY.id_of("stellarloom:emitter")
 I_LAUNCH_PAD_ITEM = ITEM_REGISTRY.id_of("stellarloom:launch_pad")
 I_PLANET_ENGINE_ITEM = ITEM_REGISTRY.id_of("stellarloom:planet_engine")
 I_POWER_POLE_ITEM = ITEM_REGISTRY.id_of("stellarloom:power_pole")
+I_PIPE_ITEM = ITEM_REGISTRY.id_of("stellarloom:pipe")
+I_TANK_ITEM = ITEM_REGISTRY.id_of("stellarloom:tank")
+I_FLUID_PUMP_ITEM = ITEM_REGISTRY.id_of("stellarloom:fluid_pump")
 
 # 数字视图（UI/渲染/内部 dict 用 int 查——**实时引用**注册表内部 dict，
 # mod 注册/卸载物品后这里立刻同步，消费方零改动）
@@ -207,6 +234,27 @@ ITEM_NAMES = ITEM_REGISTRY.names_map
 ITEM_COLORS = ITEM_REGISTRY.colors_map
 # 名字视图（存档 / 配方 JSON / mod API 用 "stellarloom:iron_ore"）
 ITEM_IDS = ITEM_REGISTRY.ids_map
+
+# ---------------- 液体注册表（M14）----------------
+# 液体是独立 id 段（0 = 空），**不进背包/传送带/分拣器过滤**。
+_VANILLA_FLUIDS = [
+    (1, "crude_oil", "原油",   (58, 48, 40)),
+    (2, "fuel_oil",  "燃料油", (196, 116, 40)),
+    (3, "petroleum", "石油气", (176, 196, 124)),
+]
+for _fid, _fkey, _fdisp, _fcol in _VANILLA_FLUIDS:
+    FLUID_REGISTRY.fixed_register(_fid, f"{VANILLA}:{_fkey}", _fdisp, _fcol)
+
+F_EMPTY = 0
+F_CRUDE_OIL = FLUID_REGISTRY.id_of("stellarloom:crude_oil")
+F_FUEL_OIL = FLUID_REGISTRY.id_of("stellarloom:fuel_oil")
+F_PETROLEUM = FLUID_REGISTRY.id_of("stellarloom:petroleum")
+
+# 实时视图（mod 注册液体后立刻可见）
+FLUID_NAMES = FLUID_REGISTRY.names_map
+FLUID_COLORS = FLUID_REGISTRY.colors_map
+FLUID_IDS = FLUID_REGISTRY.ids_map
+FLUID_FALLBACK_COLOR = (150, 150, 150)
 
 # 矿脉类型（grid.ore_type 数组的值）
 ORE_NONE = 0
@@ -249,6 +297,24 @@ for _rid, (_ins, _outs, _dur, _mach) in RECIPES.items():
         if _it not in ITEM_NAMES:
             raise ValueError(
                 f"配方 {_rid} 引用了未注册物品 id {_it}（数据/recipes.json）")
+
+# ---------------- 液体配方旁挂表（M14）----------------
+# 为了让 26 条既有配方和 mod 的 4 元组解包零改动，液体不进 RECIPES 元组，
+# 而是这张旁挂表：rid -> (输入液体 {fid: 量}, 输出液体 {fid: 量})。
+# 同一 rid 可以既有物品配方（RECIPES）又有液体配方——比如"原油→燃料油+石油气"
+# 只有液体，也允许"塑料：石油气 + 石砖 → 塑料"这种混搭。
+RECIPE_FLUIDS: dict[str, tuple[dict, dict]] = load_recipe_fluids()
+
+
+def fluid_recipe_of(rid: str) -> tuple[dict, dict]:
+    """配方用到的液体：(输入, 输出)。没有液体配方返回两个空 dict。"""
+    return RECIPE_FLUIDS.get(rid, ({}, {}))
+
+
+# 能做配方 = 建筑 id 是否出现在该配方的 machines 元组里（液体配方共用）。
+def recipe_machines(rid: str) -> tuple:
+    r = RECIPES.get(rid)
+    return r[3] if r else ()
 
 # 手搓耗时倍率：手搓比机器慢这么多倍。成本完全一样，只是时间。
 HAND_CRAFT_TIME_MULT = 2.5
@@ -304,7 +370,16 @@ BUILD_ITEM = {
     B_LAUNCH_PAD: I_LAUNCH_PAD_ITEM,
     B_PLANET_ENGINE: I_PLANET_ENGINE_ITEM,
     B_POWER_POLE: I_POWER_POLE_ITEM,
+    B_PIPE: I_PIPE_ITEM,
+    B_TANK: I_TANK_ITEM,
+    B_FLUID_PUMP: I_FLUID_PUMP_ITEM,
 }
+
+# 可当"液体格"的建筑（参与管网计算，容量见 PIPE_CELL_CAP/TANK_CELL_CAP）
+FLUID_CELL_BUILDINGS = frozenset({B_PIPE, B_TANK})
+
+# 机器类建筑（MachineNetwork.sync 按这个集合建实例；mod 建筑可自行加入）
+MACHINE_BTYPES = (B_FURNACE, B_ASSEMBLER)
 
 # 开局送一批启动物资（不然连第一条带子都铺不了）
 STARTING_ITEMS = {
@@ -362,6 +437,9 @@ C_EMITTER = (250, 220, 120)
 C_LAUNCH_PAD = (110, 170, 230)
 C_PLANET_ENGINE = (150, 220, 190)
 C_POWER_POLE = (205, 180, 120)
+C_PIPE = (110, 125, 145)
+C_TANK = (150, 160, 175)
+C_FLUID_PUMP = (120, 200, 200)
 
 BUILDING_COLORS = {
     B_BELT: C_BELT,
@@ -380,6 +458,9 @@ BUILDING_COLORS = {
     B_LAUNCH_PAD: C_LAUNCH_PAD,
     B_PLANET_ENGINE: C_PLANET_ENGINE,
     B_POWER_POLE: C_POWER_POLE,
+    B_PIPE: C_PIPE,
+    B_TANK: C_TANK,
+    B_FLUID_PUMP: C_FLUID_PUMP,
 }
 
 # 科研站：吃电磁矩阵（一级科研包），一个包推进 1 点研究进度

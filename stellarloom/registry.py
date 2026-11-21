@@ -163,6 +163,20 @@ class ItemRegistry:
 ITEM_REGISTRY = ItemRegistry()
 
 
+class FluidRegistry(ItemRegistry):
+    """液体注册表（M14）：id 从 1 起，0 = 空。
+
+    与物品注册表同哲学（名字持久化 / 数字运行时），但**独立段**：
+    液体不进背包、不上传送带、不进分拣器过滤列表，所以绝不能和
+    物品 id 混用——两边各有一张表，谁也不会踩谁。
+    """
+
+    def __init__(self):
+        super().__init__()
+        self._next = 1        # 液体从 1 起（0 留作"空"）
+
+
+
 class BuildingRegistry:
     """建筑类型注册表（M8）：名字 ↔ 数字 id。
 
@@ -265,3 +279,6 @@ class BuildingRegistry:
 
 
 BUILDING_REGISTRY = BuildingRegistry()
+
+# 液体注册表单例（M14）：config.py 注册原版三种，mod 用 ctx.add_fluid 加自己的
+FLUID_REGISTRY = FluidRegistry()

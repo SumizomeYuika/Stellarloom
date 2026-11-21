@@ -159,6 +159,9 @@ def main() -> int:
     check("测试供电已铺（风力 6 台 = 240 kW）",
           sim.power.last_supply >= 200.0,
           f"supply={sim.power.last_supply:.1f}")
+    # M14b：电网强制分区后测试机器未必全在风场 8 格内 —— 本文件验的是
+    # mod 内容（机器/配方/科技锁），不测电网拓扑，用官方钩子直接给满电。
+    sim.power.force_ratio = 1.0
     sim.inventory[GT.I_GT_CRUSHER] = 3
     sim.inventory[GT.I_GT_FURNACE] = 3
     r = sim.place_building(GT.B_GT_CRUSHER, x, y, 0)

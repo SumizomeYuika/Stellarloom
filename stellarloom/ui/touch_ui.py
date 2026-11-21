@@ -14,6 +14,7 @@ from . import uidef
 CATEGORIES = [
     ("物流带", (C.B_BELT, C.B_INSERTER)),
     ("生产", (C.B_MINER, C.B_FURNACE, C.B_ASSEMBLER)),
+    ("液体", (C.B_PIPE, C.B_TANK, C.B_FLUID_PUMP)),
     ("电力", (C.B_SOLAR, C.B_WIND, C.B_POWER_POLE)),
     ("物流塔", (C.B_TOWER_SUPPLY, C.B_TOWER_REQUEST, C.B_LAUNCH_PAD)),
     ("存储", (C.B_CHEST,)),

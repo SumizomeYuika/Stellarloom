@@ -299,14 +299,37 @@ def check_filter_panel_open() -> bool:
     if not (opened and is_open):
         print("  !! FAIL 查看模式没打开过滤面板")
         return False
-    # 非查看模式不能开（避免抢放置点击）
+    # M13.3：不再要求查看模式——手里拿着分拣器时，那格已经被 overlay 占了，
+    # 反正放不上去，直接把面板给玩家（改过滤 / 拆除）。
     g2, cell2 = _inserter_case()
     g2.ui.view_mode = False
-    g2.selected_building = C.B_BELT
+    g2.selected_building = C.B_INSERTER
     opened2 = g2._try_open_panel(*cell2)
-    print(f"[7] 非查看模式点分拣器 → 开面板={opened2} (期望 False)")
-    if opened2:
-        print("  !! FAIL 非查看模式抢了放置点击")
+    print(f"[7] 非查看模式 + 手持分拣器点分拣器 → 开面板={opened2} (期望 True)")
+    if not opened2:
+        print("  !! FAIL 手持分拣器时改不了已有分拣器的过滤")
+        return False
+    # M10 铁律：分拣器是 overlay，格子建筑层还空着时，手里拿别的建筑
+    # （尤其传送带）这一击必须让给放置——否则带子永远铺不到臂下面。
+    g3, cell3 = _inserter_case()
+    g3.ui.view_mode = False
+    g3.selected_building = C.B_BELT
+    # 把源格那根带子撤掉，让 target 格变成"只有分拣器、建筑层为空"
+    g3.grid.remove(cell3[0], cell3[1])
+    g3.grid.place_overlay(cell3[0], cell3[1], C.B_INSERTER, 0)
+    opened3 = g3._try_open_panel(*cell3)
+    print(f"[8] 非查看模式 + 手持传送带点空格分拣器 → 开面板={opened3} (期望 False)")
+    if opened3:
+        print("  !! FAIL 抢了传送带放置点击（带子铺不到分拣器下面）")
+        return False
+    # 反过来：那格有带子（放不下东西）时开面板不算抢点击
+    g4, cell4 = _inserter_case()
+    g4.ui.view_mode = False
+    g4.selected_building = C.B_BELT
+    opened4 = g4._try_open_panel(*cell4)
+    print(f"[9] 分拣器压在带子上 → 开面板={opened4} (期望 True)")
+    if not opened4:
+        print("  !! FAIL 该格放不下东西，面板却没开")
         return False
     return True
 

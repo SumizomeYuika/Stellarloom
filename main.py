@@ -42,6 +42,24 @@ def create_screen():
 
 
 if __name__ == "__main__":
+    import argparse
+    ap = argparse.ArgumentParser(description="星织 StellarLoom-PG")
+    ap.add_argument("--join", default=None, metavar="HOST[:PORT]",
+                    help="联机：加入专用服务端（默认端口 27715）")
+    ap.add_argument("--name", default="玩家", help="联机昵称")
+    args, _unknown = ap.parse_known_args()
+
     screen = create_screen()
     # M13：分步加载界面（大步骤进度条 + 当前加载项）
-    create_game(screen).run()
+    game = create_game(screen)
+    if args.join:
+        host, _, port_s = args.join.partition(":")
+        port = int(port_s) if port_s else 27715
+        from stellarloom.net.client import NetClient
+        client = NetClient(host, port, args.name, mirror=game.sim)
+        if client.connect():
+            game.attach_net(client)
+            game._toast_msg(f"已加入 {host}:{port}", 3.0)
+        else:
+            game._toast_msg(f"联机失败：{client.disconnect_reason}", 4.0)
+    game.run()

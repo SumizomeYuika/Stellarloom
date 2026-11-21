@@ -141,6 +141,23 @@ python3 tools/_shim_display.py tools/_simcheck.py    # 单跑
 `event.get` 返回空、`key.get_pressed` 返回全松。**全部 33 个自检脚本在垫层下
 PASS**（详见 `Docs/Roadmap.md` M13.1）。生产代码不许 import 它。
 
+## 联机（M15b/c）
+
+```bash
+# 专用服务端（自动打包，只依赖 Python + numpy，不需要 pygame）
+python tools/build_server.py --out dist/server --pack-mods --zip
+python dist/server/run_server.py --port 27715 [--save save.slm] [--autosave 120]
+
+# 客户端加入（Pydroid / PC 都行）
+python main.py --join <服务端IP>[:27715] --name 昵称
+```
+
+- 服务端权威跑模拟（20Hz），客户端只发指令、收快照/事件/脏格；断线自动回退单机。
+- 服务端控制台：`status / players / kick / say / save / hash / stop`。
+- mod：服务端加载 `mods/`（联机的逻辑 mod 必须装在服务端），握手时客户端比对
+  mod 清单，缺内容 mod 只警告不拒绝。
+- `run_server.py --headless-check 300` 输出状态哈希（两次运行必须一致，CI 回归）。
+
 ## 文档
 
 - `Docs/Mods.md` — MOD 快速入门（M6.27）

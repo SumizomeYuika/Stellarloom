@@ -181,7 +181,11 @@ class TechPanel:
         for rect, act in self._detail_btn:
             if rect.collidepoint(pos):
                 if act == "study" and self.selected in self._nodes:
-                    self._tech.start(self.selected)
+                    # M15a：走 sim 指令（联机时服务端执行），不再直改 TechTree
+                    if self._sim is not None:
+                        self._sim.start_research(self.selected)
+                    else:
+                        self._tech.start(self.selected)
                 elif act == "manual" and self.selected in self._nodes:
                     self._do_manual(self.selected)
                 return True

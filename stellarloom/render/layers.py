@@ -126,6 +126,12 @@ class ChunkRenderer:
                         self._draw_wind(surf, rect, tile_px)
                     elif b == C.B_POWER_POLE:
                         self._draw_power_pole(surf, rect, tile_px)
+                    elif b == C.B_PIPE:
+                        self._draw_pipe(surf, rect, wx, wy, tile_px)
+                    elif b == C.B_TANK:
+                        self._draw_tank(surf, rect, tile_px)
+                    elif b == C.B_FLUID_PUMP:
+                        self._draw_fluid_pump(surf, rect, d, tile_px)
                     elif b == C.B_INSERTER:
                         self._draw_inserter(surf, rect, d, tile_px)
                     elif b == C.B_TOWER_SUPPLY:
@@ -499,6 +505,92 @@ class ChunkRenderer:
             ny = cy + dy * (r - nh)
             pygame.draw.rect(surf, dark,
                              (nx - nw // 2, ny - nh // 2, nw, nh))
+
+    # ---------- 液体（M14） ----------
+
+    def _draw_pipe(self, surf, rect, wx, wy, tile_px):
+        """管道：深色槽 + 朝四邻的通道（邻居是管道/储罐/泵才连）。
+
+        泵按朝向的两端连（进/出口），这样管网看起来是通的。
+        """
+        g = self.grid
+        base = (46, 52, 62)
+        surf.fill(base, rect)
+        if tile_px < 5:
+            return
+        dark = _lerp(base, (0, 0, 0), 0.35)
+        mid = C.C_PIPE
+        w = max(tile_px // 5, 2)
+        cx, cy = rect.center
+        links = []
+        for d in range(4):
+            nx = (wx + C.DX[d]) % g.w
+            ny = (wy + C.DY[d]) % g.h
+            bt = int(g.building[ny, nx])
+            ok = bt in C.FLUID_CELL_BUILDINGS
+            if bt == C.B_FLUID_PUMP:
+                # 泵：它朝着 d 的反方向时，出口/入口在这侧
+                pd = int(g.direction[ny, nx]) & 3
+                ok = d == (pd + 2) % 4 or d == pd
+            links.append(ok)
+        for d, ok in enumerate(links):
+            if not ok:
+                continue
+            dx, dy = C.DX[d], C.DY[d]
+            ex = cx + dx * rect.width // 2
+            ey = cy + dy * rect.height // 2
+            pygame.draw.line(surf, mid, (cx, cy), (ex, ey), w)
+        # 中心节点
+        r = max(tile_px // 5, 2)
+        pygame.draw.circle(surf, _lerp(mid, (255, 255, 255), 0.25), (cx, cy), r)
+        if not any(links):
+            pygame.draw.rect(surf, dark, rect, 1)
+
+    def _draw_tank(self, surf, rect, tile_px):
+        """储液罐：金属底 + 罐壁 + 刻度线。"""
+        self._base(surf, rect, C.C_TANK, tile_px)
+        if tile_px < 8:
+            return
+        dark = _lerp(C.C_TANK, (0, 0, 0), 0.5)
+        light = _lerp(C.C_TANK, (255, 255, 255), 0.3)
+        inner = rect.inflate(-tile_px // 3, -tile_px // 4)
+        pygame.draw.rect(surf, dark, inner, 1)
+        # 三道刻度（每 1/4 一条短横线）
+        for i in (1, 2, 3):
+            y = inner.top + inner.height * i // 4
+            pygame.draw.line(surf, light, (inner.left + 1, y),
+                             (inner.left + max(tile_px // 3, 2), y), 1)
+        # 顶部阀口
+        pygame.draw.rect(surf, light,
+                         (rect.centerx - max(tile_px // 8, 1), rect.top + 1,
+                          max(tile_px // 4, 2), max(tile_px // 8, 1)))
+
+    def _draw_fluid_pump(self, surf, rect, d, tile_px):
+        """液体泵：亮青底 + 指向箭头（单向输送方向唯一标识）。"""
+        self._base(surf, rect, C.C_FLUID_PUMP, tile_px)
+        if tile_px < 8:
+            return
+        dark = _lerp(C.C_FLUID_PUMP, (0, 0, 0), 0.5)
+        light = _lerp(C.C_FLUID_PUMP, (255, 255, 255), 0.55)
+        cx, cy = rect.center
+        # 机身
+        s = max(tile_px // 3, 2)
+        pygame.draw.rect(surf, dark, (cx - s, cy - s, s * 2, s * 2))
+        pygame.draw.rect(surf, light, (cx - s + 1, cy - s + 1,
+                                       max(s * 2 - 2, 1), max(s * 2 - 2, 1)))
+        # 箭头（朝向）
+        t = max(tile_px // 3, 3)
+        dx, dy = C.DX[d] * t, C.DY[d] * t
+        tip = (cx + dx, cy + dy)
+        pygame.draw.line(surf, dark, (cx, cy), tip, max(tile_px // 10, 1))
+        # 箭头两翼
+        px, py = -dy // 3, dx // 3
+        pygame.draw.line(surf, dark, tip, (tip[0] - dx // 2 + px,
+                                           tip[1] - dy // 2 + py),
+                         max(tile_px // 12, 1))
+        pygame.draw.line(surf, dark, tip, (tip[0] - dx // 2 - px,
+                                           tip[1] - dy // 2 - py),
+                         max(tile_px // 12, 1))
 
     # ---------- 每帧绘制 ----------
 

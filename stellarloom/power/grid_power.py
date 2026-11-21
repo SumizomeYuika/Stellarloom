@@ -5,7 +5,8 @@
   就连通（塔可接力），连成一个电网；不相连的就是两个电网，互不借电。
 - 每个电网独立算 supply/demand → ratio；机器按自己所在电网的 ratio 变速。
 - 戴森云与 mod 全局注电按各网需求比例摊派（不会凭空喂给孤岛）。
-- 兼容：**全场一根电力塔都没有时退回旧版全球电网**（旧档/开局不至于全停电）。
+- **一律分区**（M14b 修正）：没有"没铺电力塔就全球一张网"的旧兼容——那等于把
+  分区系统藏起来。8 格内的电力节点自动并网，远了就是两张网，想跨远必须铺塔。
 - 单位：kW；显示自动转 kW/MW。旧 mod 直接 `power.last_supply += x` 的注电
   按 POWER_LEGACY_SCALE 换算成 kW 后摊到各网。
 """
@@ -44,7 +45,6 @@ class PowerGrid:
         # 电网分区缓存
         self._nets: list[dict] = []
         self._cell_net: dict[tuple[int, int], int] = {}
-        self._legacy = False     # 没有电力塔 → 退回全球一张网
         self._rev = -1
         self._age = 999.0
         self._display_supply = 0.0
@@ -102,10 +102,15 @@ class PowerGrid:
         return (dx * dx + dy * dy) ** 0.5
 
     def rebuild(self):
-        """重建电网分区（建筑变化/定时调用）。"""
+        """重建电网分区（建筑变化/定时调用）。
+
+        M14b 修正：**不再有"没有电力塔就全球一张网"的旧兼容**。
+        那个兜底等于把分区系统藏起来——玩家铺了风车、没铺塔，看到的还是
+        "一张网"，分区从来没生效过。现在一律按 POWER_LINK_RANGE 连通：
+        相距 8 格内的电力节点自动并网，超出就是两张网，想跨远就得铺电力塔。
+        """
         g = self.grid
         nodes = self._collect_nodes()
-        self._legacy = not any(bt == C.B_POWER_POLE for _, _, bt in nodes)
         self._nets = []
         self._cell_net = {}
         if not nodes:
@@ -127,30 +132,26 @@ class PowerGrid:
             if ri != rj:
                 parent[rj] = ri
 
-        if self._legacy:
-            for i in range(1, n):
-                union(0, i)
-        else:
-            R = max(1.0, self.LINK_RANGE)
-            bk = max(1, int(R))
-            buckets: dict[tuple[int, int], list[int]] = {}
-            keys = []
-            for i, (x, y, _bt) in enumerate(nodes):
-                key = (x // bk, y // bk)
-                keys.append(key)
-                buckets.setdefault(key, []).append(i)
-            bw = (g.w + bk - 1) // bk
-            bh = (g.h + bk - 1) // bk
-            for i, (x, y, _bt) in enumerate(nodes):
-                bx, by = keys[i]
-                for ox in (-1, 0, 1):
-                    for oy in (-1, 0, 1):
-                        for j in buckets.get(((bx + ox) % bw, (by + oy) % bh), ()):
-                            if j <= i:
-                                continue
-                            x2, y2, _ = nodes[j]
-                            if self._dist(x, y, x2, y2) <= R:
-                                union(i, j)
+        R = max(1.0, self.LINK_RANGE)
+        bk = max(1, int(R))
+        buckets: dict[tuple[int, int], list[int]] = {}
+        keys = []
+        for i, (x, y, _bt) in enumerate(nodes):
+            key = (x // bk, y // bk)
+            keys.append(key)
+            buckets.setdefault(key, []).append(i)
+        bw = (g.w + bk - 1) // bk
+        bh = (g.h + bk - 1) // bk
+        for i, (x, y, _bt) in enumerate(nodes):
+            bx, by = keys[i]
+            for ox in (-1, 0, 1):
+                for oy in (-1, 0, 1):
+                    for j in buckets.get(((bx + ox) % bw, (by + oy) % bh), ()):
+                        if j <= i:
+                            continue
+                        x2, y2, _ = nodes[j]
+                        if self._dist(x, y, x2, y2) <= R:
+                            union(i, j)
 
         comp: dict[int, int] = {}
         for i, (x, y, bt) in enumerate(nodes):
@@ -206,14 +207,12 @@ class PowerGrid:
         # 全局注电（戴森云 / 旧 mod 注电）按需求比例摊到各网
         for net in self._nets:
             extra = 0.0
-            if global_extra > 0.0:
-                if total_dem > 0.0:
-                    extra = global_extra * (net["dem"] / total_dem)
-                elif not self._legacy:
-                    extra = 0.0   # 没负载的网络不占电
+            if global_extra > 0.0 and total_dem > 0.0:
+                extra = global_extra * (net["dem"] / total_dem)
             avail = net["gen"] + extra
             net["ratio"] = (min(1.0, avail / net["dem"])
                             if net["dem"] > 0.0 else 1.0)
+            net["avail"] = avail
 
         self.last_demand = total_dem
         self._display_supply = total_gen + global_extra
@@ -229,13 +228,16 @@ class PowerGrid:
         """该格所在电网的供电比例；不需要电的格子返回 1。"""
         if self.force_ratio is not None:
             return float(self.force_ratio)
-        if self._legacy:
-            return self.last_ratio
         key = (int(x) % self.grid.w, int(y) % self.grid.h)
         i = self._cell_net.get(key, _MISS)
         if i is _MISS:
             return 1.0
         return self._nets[i]["ratio"]
+
+    def starved_nets(self) -> int:
+        """有负载但一点电都没有的网数（读档后给玩家提示用）。"""
+        return sum(1 for n in self._nets if n["dem"] > 0.0
+                   and n.get("avail", n["gen"]) <= 0.0)
 
     @property
     def net_count(self) -> int:

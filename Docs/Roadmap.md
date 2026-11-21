@@ -773,9 +773,27 @@ BUILD_ITEM 联动 / 固定段兼容 / machines 名字解析 / 未知机器拒绝
 3. **分区**：电力节点（发电/耗电/分拣器叠加层/塔）距离 ≤8 格即并网，并查集连通；
    每网独立算供/需/比例，`factor_at(x,y)` 供机器、科研站、发射器、行星引擎取自己网的比例。
 4. **摊派**：戴森云与旧 mod 注电按各网需求比例分；无负载的网不占电。
-5. **兼容**：全图没有一根电力塔时退回旧全球电网（旧档不会全停电）；
-   `power.last_supply += x` 的旧 mod 写法按 ×20 记全局注电。
+5. **兼容**：~~全图没有一根电力塔时退回旧全球电网~~ —— **M14b 已废除**，
+   现在无塔也按 8 格分区（见下）；`power.last_supply += x` 的旧 mod 写法仍按 ×20 记全局注电。
 6. **测试**：新自检 `tools/_powercheck.py`（10 段），全套 **25 项自检全绿**。
+
+### 电网强制分区（M14b 补正）
+
+**问题**：M9 留了"没有电力塔 → 全球一张网"的旧档兼容。结果玩家铺了风车、没铺塔时
+永远只看到一张网，分区系统等于被藏起来（用户拿旧档 slot_1 实测：2 台风力 + 0 座塔，
+HUD 仍是 1 张网）。
+
+**改法**：删掉 `_legacy` 分支，一律按 `POWER_LINK_RANGE=8` 连通分区——8 格内自动并网、
+超了就是两张网，跨远必须铺电力塔。旧档读入后 `PowerGrid.starved_nets()` 统计
+"有负载却没发电"的网，`Game._warn_power_partition()` 立刻提示
+「电网已按 8 格分区：N 张网缺电（共 M 张），用电力塔把发电并过来」。
+
+**实测旧档 slot_1**：分区后 6 张网——主厂 80 kW 发电 / 460 kW 需求（17%），
+核心 160 kW 独占一网（1.00），另外 4 张网 0 供电。这正是"需要铺塔"的真实反馈。
+
+**测试**：`_powercheck` [2] 改写成"无塔也分区"（孤立 0 / 3 格并网 1.0 / 30 格另成网），
+`_enginecheck` 改成真铺 20 台风机（800 kW）驱动引擎，`_gt_*` 内容测试改用
+`power.force_ratio` 官方钩子绕开拓扑；全套 **30 项自检全绿**。
 
 ## M10 已完成（分拣器三段式机械臂）
 
@@ -877,6 +895,152 @@ for f in tools/_*.py; do case $(basename $f) in _tmp*|_shim_display.py) continue
 
 注意：垫层只能验证"逻辑与渲染状态"，测不出真窗口的东西（窗口尺寸/缩放后的实际
 画面/触摸坐标 → 屏幕像素映射）。发布前仍需在 Pydroid App 内实跑一次。
+
+## M13.2 已完成（无电开局：长按采矿 + 手搓科研包 + 手动研究）
+
+设计变更：**出生点不再预置核心**（`PlanetDef.has_core` 全 False），开局一点电都没有。
+新开局路径 = 长按矿格手动采矿 → 手搓铁板/铜板/磁铁/铜线/电磁矩阵 →
+科技面板「手动研究」推第一个科技 → 解锁电力后铺太阳能/风力，再转自动化。
+
+1. **手动采矿**：`GestureRecognizer.poll_longpress()` + `LongPressEvent`；
+   长按成立后抖动阈值放宽到 `LONGPRESS_DRIFT=24px`（否则触屏微滑会被判成拖动）；
+   `Game._tick_mining` 每帧按 `holding_pos()` 累加 `dt / MANUAL_MINE_SECONDS(1.2s)`，
+   满了调 `sim.manual_mine()` 进背包并在矿格上方画进度条。
+2. **`sim.world` 权威入口**：以前只有 `worlds` 列表，前端拼 `worlds[world_index]`；
+   现在 `Simulation.world` 属性唯一权威。
+3. **一级包可手搓**：`HANDCRAFT_BLACKLIST` 只剩 `science_red`——没电时科研站转不起来，
+   「挖矿 → 手搓电磁矩阵 → 手动研究」是唯一开局推进路径（`_startcheck` 重写校验此链）。
+4. **旧档兼容**：核心仍保留 160 kW 发电（`POWER_GEN[B_CORE]`），旧档摆下的核心照常供电。
+
+## M13.3 已完成（分拣器过滤 UI：拆除按钮 + 方向提示）
+
+1. 过滤面板新增「拆除分拣器」按钮（`FilterPanel.ACT_REMOVE`），删掉了"必须查看模式"
+   才开面板的限制（手里拿分拣器时那格已被 overlay 占住，放不上去，直接给面板）。
+2. 面板显示 `抓取方向：→ 东 / ↓ 南 / ← 西 / ↑ 北`，改过滤时能确认臂朝哪边。
+3. 点物品即生效并刷新面板「当前」；`_try_open_panel` 不再因手持分拣器而封死入口。
+
+**补正（本地修复）**：M13.3 把"手里拿传送带点分拣器格"也判给了过滤面板，与 M10
+「带子可以从臂下穿过」冲突——那格建筑层是空的，这一击本该是放置。现在规则是
+**该格放得下手里这个建筑 → 让给放置；放不下（已被占/查看模式/手持分拣器）→ 开面板**。
+`_uicheck` 的「过滤面板开合」据此改写为 4 个分支（查看模式 / 手持分拣器 / 手持传送带
+点空格 / 分拣器压带子）。
+
+## M14a 已完成（液体地基：每格独立液量 + 压差限速 + 泵）
+
+按用户要求**不做"整段瞬时共享"**（计划里的已知简化 8.1 被否掉）：每一格管道/储罐
+自己存液量，相邻两格按压差限速互流，长管线要时间才灌满——压力是真实的一格格传的。
+
+1. **数据模型** `logistics/pipes.py::FluidNetwork`：稀疏格表（`cells/index/amt/fid/cap/nb`），
+   随 `grid.rev` 懒重建；不碰 512×512 数组，每帧只跑液体格。
+2. **流量**：相邻格 `q = clip(Δ量×0.5, ±PIPE_FLOW_RATE×dt)`，再钳到"源存量/目标余量"；
+   一律从高液位流向低液位。`PIPE_FLOW_RATE=60/s`，一格里外都守恒（自检校验 ±0.5）。
+3. **泵** `B_FLUID_PUMP`：单向、**无视压差**（能把液体从低液位顶进高液位）、
+   上限 `PUMP_FLOW_RATE=300/s`、耗电 20 kW（断电不搬）。输入口 = 本格−朝向，
+   输出口 = 本格+朝向，泵格本身不是液体格 → 天然把管网分成两段。
+4. **液体**独立注册表（id 1.. / 0=空）：1 原油、2 燃料油、3 石油气。**不进背包、
+   不上传送带、不进分拣器过滤列表**（与物品数字段重叠但名字表完全独立）。
+5. **建筑**（底栏新增「液体」分类）：管道（100/格）、储液罐（2500/格）、液体泵；
+   三件都有手搓/机器配方。
+6. **机器自动接管道**：配方含液体时（`C.RECIPE_FLUIDS` 旁挂表，不动 26 条既有 4 元组），
+   机器每帧从四邻抽原料液（30/s）、把产物液排回管道（30/s），内部每种液体上限 100；
+   缓冲满/抽不到就停工，不吞料。
+7. **拆格泼液**：拆管道/储罐前把液体泼给四邻，泼不完才丢——拆一格满罐不再凭空蒸发 2500。
+8. **渲染**：静态管道按四邻画直管/拐角/端帽（泵按朝向连两端）、储罐画罐壁刻度、
+   泵画指向箭头；液面走动态层 `Game._draw_fluids()`（只遍历液体格 + 屏幕剔除，
+   液柱从底部按 液量/容量 长，颜色取液体色）。
+9. **存档 v13**：每行星 `pipe_fluid: [{x,y,f,a}]`，只存有液体的格；v12 旧档迁移补空表。
+10. **测试**：新自检 `tools/_fluidcheck.py`（11 段：注册表/容量/压差/单向/混液/泵/
+    机器/泼液/存档/渲染/隔离+mod API），全套 **30 项自检全绿**（`_jadecheck` 因卡死被删）。
+
+**顺带修的两个 bug**：
+- **合成面板 / 机器配方选择器划不动**：`scroll_by` 对每帧只有几像素的拖动手势做
+  `dy // 22`，永远是 0；改成累积小数像素（并用 `int(a/w)` 向零截断，避免负方向 floor 震荡）。
+  机器面板的配方选择器原来**完全没有滚动**，现在支持滚轮+拖动，并显示 `滚动 a-b/n`。
+- **`Machine.update` 签名不能变**：mod 用 mixin 包了它，加第三个参数会让它们的
+  `before` 钩子直接 `TypeError`；液体管网改由 `Machine.pipes` 注入。
+
+## M14b 未启动（液体内容链）
+
+原油矿脉 + 抽油机 + 炼油厂（原油→燃料油+石油气）+ 燃油发电机（烧燃料油发电），
+以及 `fluid1` 科技锁。M14c：石油气→塑料→高级电路板。
+
+## M15a 已完成（联机前置：指令层收口）
+
+**问题**：三个网络协议方案独立评审时都指出同一件事——UI 面板在**绕过 sim 直接改状态**
+（`machine.set_recipe` / `m.take_input` / `inventory.pop` / `tower.filter = …`）。
+单机时看不出问题，联机时服务端完全不知道这些写操作，必然状态分裂。
+
+**改法**：
+1. **指令层**：新增 14 个 `Simulation` 指令（全部返回码风格，与放置指令一致）：
+   `set_machine_recipe` / `machine_take_input` / `machine_add_input` /
+   `machine_take_outputs` / `container_at` / `container_take` / `container_put` /
+   `chest_take` / `chest_put` / `lab_set_mode` / `lab_set_recipe` / `lab_take_item` /
+   `lab_add_item` / `lab_take_outputs` / `set_tower_filter` / `start_research`。
+   校验都在服务端：机型/科技/配方三件套、背包余量、容器类型。
+2. **面板全改走指令**：机器面板、科研站面板、存储面板（箱子/采矿机/发射器统一成
+   `container_take/put`）、物流塔过滤、科技面板 [研究]。`Game.__init__` 统一注入
+   `sim`（联机时换成远程代理，面板代码一行不用改）。
+3. **事件/脏格 fan-out**：`subscribe_events()` / `subscribe_dirty()`，`emit`/`_mark_dirty`
+   同时喂本地队列和订阅者——原来 `pop_events()` 是单消费者，服务端和渲染会互相抢。
+4. **`with_world(i)` 上下文**：联机指令带行星作用域，进出自动还原 `world_index`/grid。
+
+**测试**：新自检 `tools/_cmdcheck.py`（8 段：机器/容器/科研/塔/研究指令 + fan-out +
+world 作用域 + **静态扫描 19 个 UI 文件确认零越权**），全套 **31 项自检全绿**。
+
+## M15b 已完成（联机骨架：权威服务端 + 镜像客户端）
+
+架构（沿用三方案评审推荐的 A→C 混合，TCP 单通道起步）：
+
+1. **权威服务端** `stellarloom/net/server.py::NetServer`：独占跑
+   `Simulation.step`（20Hz 定步长）；指令队列与 step 串行执行；事件/脏格 fan-out
+   广播；关键帧 = 存档 dump（复用 v13 格式，~45 KB zlib）。
+   独立入口：`python -m stellarloom.net.server --port 27715 [--save save.slm]
+   [--autosave 120]`，控制台命令 status/save/players/stop。
+2. **镜像客户端** `stellarloom/net/client.py`：`NetClient`（reader 线程收发，
+   `poll()` 主线程消费）+ `RemoteSim` 代理——读属性穿透本地镜像 `Simulation`，
+   白名单指令（`net/commands.py`：建造/容器/科研/星际 30 条）转发 CMD 并阻塞等
+   ACK（LAN RTT 内 UI 停顿无感）。**Game.attach_net() 一行进入联机模式**，
+   断线自动回退单机（镜像变本地权威）。
+3. **帧协议** `net/protocol.py`：`SLMN` 魔数 + 长度前缀 + JSON，单帧上限 8 MiB；
+   握手校验协议版本 + SAVE_VERSION；拒绝与错误 ACK 带原因。
+4. **关键帧按需重建**：全量 dump 实测 ~210-270 ms/次，绝不能每秒盲发——策略是
+   "有变化 ≥0.5s 一次（grid.rev/背包/科技签名驱动），带物品活着时 2s 兜底"，
+   空闲时零开销。
+5. **入口**：`python main.py --join HOST[:PORT] --name 昵称`；联机时本地读档/
+   快速存档被禁用（提示"存档由服务端负责"）。
+
+**测试**：新自检 `tools/_netcheck.py`（10 段：帧编解码 fuzz、白名单、握手、
+双人建造同步、拒绝路径、容器指令+关键帧回流、事件/脏格扇出、聊天、断开收尾）+
+真机 e2e（Game.attach_net 放置/面板设配方/放料/聊天/断线回退全通），
+全套 **32 项自检全绿**。
+
+**已知边界（M15c/d 候选）**：带物品/无人机位置只在关键帧间跳变（实体流未做）；
+镜像整帧覆盖后 chunk 全清（可改增量）；无 ghost 预览与 AOI 订阅；无断线重连
+token；面板开着时快照到达会被强制关闭（防陈旧引用）。
+
+## M15c 已完成（服务端完善：自动打包 + mod 加载 + headless 校验）
+
+1. **服务端 mod 加载**：`NetServer.load_mods()` 用与单机同一套 ModManager
+   （失败隔离/依赖拓扑/配置合并），`_ServerGameShim` 只暴露 sim + toast 空壳；
+   mod 的 `on_step` 钩子在每 tick 同步触发。**gregtech 联机可用**。
+   握手 `hello_ack.mods` 带 [(名字, 版本)]，客户端比对：本地缺服务端 mod →
+   toast「相关内容显示为占位」，本地多装 → 提示仅影响本机显示（不硬拒绝——
+   逻辑全在服务端，客户端内容 mod 只是渲染素材）。
+2. **自动打包器 `tools/build_server.py`**：从源码收集逻辑层包
+   （sim/world/logistics/production/power/tech/save/mod/net/config/registry/api/
+   data + core/worldstate + render/camera），**AST 静态依赖闭包检查**——
+   出现 `import pygame` 或 import 到包外的 stellarloom 子模块直接构建失败，
+   防止"逻辑层偷偷依赖渲染"回归。产物 `dist/server/`：`run_server.py` 入口 +
+   VERSION.txt + README.txt，`--zip` 可打成压缩包，`--pack-mods` 带 mods
+   （跳过 __pycache__/_cache/.disabled/config）。`--check-only` 只查不落盘（CI）。
+3. **headless-check**：`run_server.py --headless-check 300` 不开 socket 纯跑逻辑，
+   输出 `state_hash()`（世界建筑+背包+带位置 blake2b），**两次运行逐位一致**
+   ——"服务端=权威逻辑"的最强回归；`hash` 控制台命令运行中随时可打。
+4. **控制台扩展**：`kick <id|名>`、`say <文本>`、`hash`、`status/save/players/stop`。
+
+**测试**：新自检 `tools/_servercheck.py`（6 段：闭包检查、打包产物、headless
+确定性双跑、**打包服务端子进程真实 socket 联机**、mod 加载与卸载干净、
+握手 mod 清单），全套 **33 项自检全绿**。
 
 ## 下一步：M5c 候选（未启动）
 煤/油（TechDebt #1 的燃料部分）仍待还；星际侧可继续做：每台多船/运输船油耗/行星航线图。

@@ -27,5 +27,8 @@
   "emitter":      { "inputs": {"stellarloom:iron_plate": 8, "stellarloom:circuit": 6, "stellarloom:stone_brick": 6, "stellarloom:gear": 4}, "outputs": {"stellarloom:emitter": 1}, "dur": 5.0, "machines": ["stellarloom:assembler"] },
   "launch_pad":   { "inputs": {"stellarloom:iron_plate": 12, "stellarloom:circuit": 8, "stellarloom:gear": 6, "stellarloom:copper_wire": 4}, "outputs": {"stellarloom:launch_pad": 1}, "dur": 8.0, "machines": ["stellarloom:assembler"] },
   "power_pole":    { "inputs": {"stellarloom:iron_plate": 3, "stellarloom:copper_wire": 4}, "outputs": {"stellarloom:power_pole": 1}, "dur": 2.0, "machines": ["stellarloom:assembler"] },
+  "pipe":         { "inputs": {"stellarloom:iron_plate": 1}, "outputs": {"stellarloom:pipe": 4}, "dur": 0.5, "machines": ["stellarloom:assembler"] },
+  "tank":         { "inputs": {"stellarloom:iron_plate": 8, "stellarloom:stone_brick": 4}, "outputs": {"stellarloom:tank": 1}, "dur": 2.0, "machines": ["stellarloom:assembler"] },
+  "fluid_pump":   { "inputs": {"stellarloom:iron_plate": 4, "stellarloom:gear": 2, "stellarloom:copper_wire": 2}, "outputs": {"stellarloom:fluid_pump": 1}, "dur": 2.0, "machines": ["stellarloom:assembler"] },
  "planet_engine":{ "inputs": {"stellarloom:iron_plate": 24, "stellarloom:circuit": 16, "stellarloom:gear": 12, "stellarloom:copper_wire": 12, "stellarloom:stone_brick": 12}, "outputs": {"stellarloom:planet_engine": 1}, "dur": 12.0, "machines": ["stellarloom:assembler"] }
 }

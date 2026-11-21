@@ -15,8 +15,11 @@ from .. import config as C
 
 
 class Machine:
+    # pipes 是 M14 的液体管网（由 MachineNetwork 注入）；不放进 update 参数，
+    # 因为 mod 用 mixin 包了 Machine.update，签名一变它们的 before 钩子就崩。
     __slots__ = ("x", "y", "btype", "recipe_id", "inputs", "outputs",
-                 "progress", "need")
+                 "progress", "need", "fluid_in", "fluid_out",
+                 "fneed", "fout", "pipes")
 
     def __init__(self, x: int, y: int, btype: int):
         self.x = x
@@ -26,6 +29,12 @@ class Machine:
         self.recipe_id: str | None = None
         self.inputs: dict[int, int] = {}
         self.outputs: dict[int, int] = {}   # 内置产物储存
+        # M14：液体槽（只在配方含液体时才可能有东西）
+        self.fluid_in: dict[int, float] = {}
+        self.fluid_out: dict[int, float] = {}
+        self.fneed: dict[int, float] = {}
+        self.fout: dict[int, float] = {}
+        self.pipes = None        # M14：由 MachineNetwork 注入 FluidNetwork
         self.progress = 0.0
         self._set_need()
 
@@ -38,6 +47,10 @@ class Machine:
             self.need = dict(ins)
         else:
             self.need = {}
+        fin, fout = C.fluid_recipe_of(self.recipe_id) \
+            if self.recipe_id else ({}, {})
+        self.fneed = dict(fin)
+        self.fout = dict(fout)
 
     def set_recipe(self, recipe_id: str | None):
         """切换配方。换配方时把不再需要的原料退回（丢弃，简单处理）。"""
@@ -45,9 +58,13 @@ class Machine:
             return
         self.recipe_id = recipe_id
         self._set_need()
-        # 只保留新配方还需要的原料
+        # 只保留新配方还需要的原料 / 液体
         self.inputs = {k: v for k, v in self.inputs.items()
                        if k in self.need and v > 0}
+        self.fluid_in = {k: v for k, v in self.fluid_in.items()
+                         if k in self.fneed and v > 0}
+        self.fluid_out = {k: v for k, v in self.fluid_out.items()
+                          if k in self.fout and v > 0}
         self.progress = 0.0
 
     def available_recipes(self, researched: set[str] | None = None) -> list[str]:
@@ -152,15 +169,30 @@ class Machine:
             self.progress = 0.0
             return
 
+        # ---------- M14：液体进料 / 出料（每帧限速抽排）----------
+        pipes = self.pipes
+        if pipes is not None:
+            self._pump_fluids(dt, pipes)
+
         ins, outs, duration, _ = C.RECIPES[self.recipe_id]
         # 材料齐没齐
         for it, n in self.need.items():
             if self.inputs.get(it, 0) < n:
                 self.progress = 0.0
                 return
+        # 液体原料齐没齐
+        for f, n in self.fneed.items():
+            if self.fluid_in.get(f, 0.0) < n:
+                self.progress = 0.0
+                return
         # 产物槽有没有空间（满了就停工，不吞材料）
         for out_item, out_n in outs.items():
             if self.output_space(out_item) < out_n:
+                self.progress = 0.0
+                return
+        # 液体产物缓冲有没有空间
+        for f, n in self.fout.items():
+            if self.fluid_out.get(f, 0.0) + n > C.MACHINE_FLUID_CAP:
                 self.progress = 0.0
                 return
 
@@ -172,20 +204,54 @@ class Machine:
                     del self.inputs[it]
             for out_item, out_n in outs.items():
                 self.outputs[out_item] = self.outputs.get(out_item, 0) + out_n
+            for f, n in self.fneed.items():
+                left = self.fluid_in.get(f, 0.0) - n
+                if left > C.FLUID_EPS:
+                    self.fluid_in[f] = left
+                else:
+                    self.fluid_in.pop(f, None)
+            for f, n in self.fout.items():
+                self.fluid_out[f] = self.fluid_out.get(f, 0.0) + n
             self.progress = 0.0
+
+    def _pump_fluids(self, dt: float, pipes):
+        """从相邻管道抽原料液、把产物液排进管道（都按每秒速率限速）。"""
+        # 原料：维持 2 倍配方量的缓冲，不然每帧抽一点会抖
+        for f, n in self.fneed.items():
+            have = self.fluid_in.get(f, 0.0)
+            want = min(n * 2.0, C.MACHINE_FLUID_CAP) - have
+            if want > 0.0:
+                got = pipes.pull(self.x, self.y, f,
+                                 min(want, C.FLUID_MACHINE_DRAW * dt))
+                if got > 0.0:
+                    self.fluid_in[f] = have + got
+        # 产物：缓冲里的液体往管道推
+        for f in self.fout:
+            have = self.fluid_out.get(f, 0.0)
+            if have <= C.FLUID_EPS:
+                continue
+            got = pipes.push(self.x, self.y, f,
+                             min(have, C.FLUID_MACHINE_PUSH * dt))
+            if got > 0.0:
+                left = have - got
+                if left > C.FLUID_EPS:
+                    self.fluid_out[f] = left
+                else:
+                    self.fluid_out.pop(f, None)
 
 
 class MachineNetwork:
     def __init__(self, grid):
         self.grid = grid
         self.machines: dict[tuple[int, int], Machine] = {}
+        self.pipes = None        # M14：由 WorldState 注入 FluidNetwork
         self._dirty = True
 
     def sync(self):
         """建筑变化后同步：新建缺失的、删除不存在的。"""
         g = self.grid
         wanted: set[tuple[int, int]] = set()
-        for btype in (C.B_FURNACE, C.B_ASSEMBLER):
+        for btype in C.MACHINE_BTYPES:
             ys, xs = np.nonzero(g.building == btype)
             for y, x in zip(ys.tolist(), xs.tolist()):
                 wanted.add((x, y))
@@ -195,6 +261,9 @@ class MachineNetwork:
         dead = [k for k in self.machines if k not in wanted]
         for k in dead:
             del self.machines[k]
+        # M14：新机器也要拿到管网（不靠 update 传参，mod 的 mixin 才不会崩）
+        for m in self.machines.values():
+            m.pipes = self.pipes
 
     def get_machine(self, x: int, y: int) -> Machine | None:
         return self.machines.get((x % self.grid.w, y % self.grid.h))
@@ -203,9 +272,11 @@ class MachineNetwork:
         """power 可以是全局倍率，也可以是 PowerGrid（按机器所在电网取比例）。"""
         if isinstance(power, (int, float)):
             for m in self.machines.values():
+                m.pipes = self.pipes
                 m.update(dt, power)
             return
         for m in self.machines.values():
+            m.pipes = self.pipes
             m.update(dt, power.factor_at(m.x, m.y))
 
     def count_working(self) -> int:

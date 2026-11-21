@@ -118,6 +118,9 @@ def main() -> int:
     simA.power.update(0.1)
     check("A 测试供电（风力 240 kW）", simA.power.last_supply >= 200.0,
           f"supply={simA.power.last_supply:.1f}")
+    # M14b：电网强制按 8 格分区后，后面的测试机器未必挨着这片风场。
+    # 这些用例验的是 mod 内容（配方/机器），不是电网拓扑 → 用官方测试钩子给满电。
+    simA.power.force_ratio = 1.0
     simA.tech.researched.add("gt_ore")
     simA.inventory[GT.I_GT_CRUSHER] = 5
     check("A 放置粉碎机", simA.place_building(GT.B_GT_CRUSHER, 10, 10, 0) == "ok")
@@ -177,6 +180,7 @@ def main() -> int:
     simB.power.update(0.1)
     check("B 测试供电（风力 240 kW）", simB.power.last_supply >= 200.0,
           f"supply={simB.power.last_supply:.1f}")
+    simB.power.force_ratio = 1.0   # 同上：内容测试不测电网拓扑
     simB.tech.researched.update(
         {"ex_mining", "ex_form", "ex_chem", "ex_alloy", "ex_reactor",
          "ex_accel", "ex_mb", "ex_mb2"})
@@ -331,6 +335,7 @@ def main() -> int:
     simC.power.update(0.1)
     check("C 测试供电（风力 240 kW）", simC.power.last_supply >= 200.0,
           f"supply={simC.power.last_supply:.1f}")
+    simC.power.force_ratio = 1.0   # 同上：内容测试不测电网拓扑
     simC.tech.researched.update(
         {"ex_mining", "ex_form", "ex_chem", "ex_alloy", "ex_reactor",
          "ex_accel", "ex_mb", "ex_mb2"})

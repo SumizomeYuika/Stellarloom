@@ -141,7 +141,7 @@ def main() -> int:
     }
     new = SaveManager()._migrate(old)
     w0 = new["worlds"][0]
-    check("版本升到 12", new["version"] == SAVE_VERSION == 12)
+    check("版本升到当前版本", new["version"] == SAVE_VERSION)
     # M7：迁移后物品键是名字（数字 1 → stellarloom:iron_ore）
     check("物品键名字化", new["stats"]["inventory"]
           == {"stellarloom:iron_ore": 3})

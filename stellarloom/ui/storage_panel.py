@@ -24,6 +24,9 @@ class StoragePanel:
         self.rect = pygame.Rect(0, 0, 420, 500)
         self.container = None
         self.title = ""
+        # M15a：写操作走 sim 指令；cell 用来定位容器（容器对象本身不再被直接改）
+        self.sim = None
+        self.cell: tuple[int, int] | None = None
         self.inv: dict[int, int] = {}
         self.per_cap = 10
         self.total_cap = None
@@ -38,9 +41,13 @@ class StoragePanel:
 
     def show(self, screen_size, title: str, container, per_cap: int,
              inventory: dict[int, int], total_cap: int | None = None,
-             allowed: set[int] | None = None):
+             allowed: set[int] | None = None,
+             cell: tuple[int, int] | None = None, sim=None):
         self.title = title
         self.container = container
+        self.cell = cell
+        if sim is not None:
+            self.sim = sim
         self.per_cap = per_cap
         self.total_cap = total_cap
         self.inv = inventory
@@ -79,25 +86,19 @@ class StoragePanel:
             return True
         return True
 
-    # ---------- 搬运 ----------
+    # ---------- 搬运（M15a：一律走 sim 指令） ----------
 
     def _take(self, item: int, count: int | None):
-        n = self.container.take_item(item, count)
-        if n > 0:
-            self.inv[item] = self.inv.get(item, 0) + n
+        sim = self.sim
+        if sim is None or self.cell is None:
+            return
+        sim.container_take(self.cell[0], self.cell[1], item, count)
 
     def _put(self, item: int, count: int):
-        have = self.inv.get(item, 0)
-        if have <= 0:
+        sim = self.sim
+        if sim is None or self.cell is None:
             return
-        n = self.container.add_item(item, min(have, count))
-        if n <= 0:
-            return
-        left = have - n
-        if left > 0:
-            self.inv[item] = left
-        else:
-            self.inv.pop(item, None)
+        sim.container_put(self.cell[0], self.cell[1], item, count)
 
     # ---------- 绘制 ----------
 

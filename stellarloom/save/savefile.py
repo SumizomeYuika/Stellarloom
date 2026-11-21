@@ -21,7 +21,7 @@ import numpy as np
 
 from .. import config as C
 
-SAVE_VERSION = 12
+SAVE_VERSION = 13
 MAGIC = b"SLM1"
 SAVE_SLOT_COUNT = 6  # 多存档（M6.20）：固定 6 个手动槽位
 
@@ -260,6 +260,12 @@ class SaveManager:
                 {"x": x, "y": y, "cd": round(cd, 3)}
                 for (x, y), cd in ws.inserters.cooldowns.items() if cd > 0]
 
+            # 液体（M14）：只存有液体的格（管道/储罐），空管不占存档
+            # 测试桩（FakeGame 的世界对象）没有 pipes → 跳过
+            pipes = getattr(ws, "pipes", None)
+            if pipes is not None:
+                wd["pipe_fluid"] = pipes.dump_cells()
+
             data["worlds"].append(wd)
 
         # M5b：恒星级舰队（跨行星，顶层存）
@@ -475,6 +481,11 @@ class SaveManager:
                     cd["cd"])
             except (KeyError, TypeError, ValueError):
                 continue
+
+        # M14：恢复管道/储罐里的液体（建筑格子已在上文写回 grid，这里重建成格表再灌）
+        pipes = getattr(ws, "pipes", None)
+        if pipes is not None:
+            pipes.load_cells(wd.get("pipe_fluid"))
 
     def load_into(self, game, data: dict):
         """把存档数据写回 Game。调用前 game 的各个 network 应已建好。"""
@@ -718,6 +729,13 @@ class SaveManager:
             for wd in data.get("worlds", []):
                 wd.setdefault("pads", [])
             data["version"] = 12
+            v = 12
+        if v == 12:
+            # v12 -> v13（M14）：管道/储罐里的液体（每行星）。
+            # 老档没有管道，所以空表就等价于"一滴液体都没有"。
+            for wd in data.get("worlds", []):
+                wd.setdefault("pipe_fluid", [])
+            data["version"] = 13
             return data
         raise ValueError(f"存档版本 {v} 太旧或不支持（当前 {SAVE_VERSION}）")
 

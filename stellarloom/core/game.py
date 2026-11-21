@@ -45,6 +45,11 @@ from .worldstate import WorldState
 from ..world.planets import PLANETS
 
 
+def _mix_white(col, t: float):
+    """把颜色往白色提一点（液面高光/细边用）。"""
+    return tuple(int(c + (255 - c) * t) for c in col[:3])
+
+
 class Game:
     # M13：启动大步骤（加载界面总进度条的格数 = 这个清单长度）
     BOOT_STAGES = ["字体", "世界生成", "渲染视图", "界面面板",
@@ -127,6 +132,12 @@ class Game:
         self.craft_panel.queue = self.craft
         # 科技面板的 toast 回调（手动研究提示）
         self.tech_panel.on_toast = self._toast_msg
+        # M15a：所有"会改状态"的面板都拿到 sim —— 面板只发指令，不再直改对象。
+        # 在这里统一注入一次（开面板时再兜底注入一次），联机时换成 RemoteSim 代理即可。
+        for _p in (self.machine_panel, self.lab_panel, self.storage_panel,
+                   self.tower_panel):
+            _p.sim = self.sim
+        self.tech_panel._sim = self.sim
 
         # 玩家状态（输入/交互，不属于服务器）
         self.selected_building = C.B_BELT
@@ -145,6 +156,12 @@ class Game:
         self._autosave_interval = 120.0  # 秒
         self._toast = ""                 # 临时提示文字
         self._toast_t = 0.0
+
+        # M15b 联机：attach_net() 后置真。net 模式 = 客户端镜像 + 指令转发，
+        # 本地 sim 不再 step（服务端权威），快照每秒回流覆盖镜像。
+        self.net = None
+        self._netmode = False
+        self._mirror_sim = None
 
         # 帧耗时统计
         self._fps_smooth = 60.0
@@ -367,6 +384,11 @@ class Game:
                 if self.craft_panel.open:
                     self.craft_panel.scroll_by(-e.y * 3 * 22)
                     continue
+                # 机器面板的配方选择器：同理（配方多了以后必须能滚）
+                if self.machine_panel.open and getattr(
+                        self.machine_panel, "_picker", False):
+                    self.machine_panel.scroll_by(-e.y * 3 * 36)
+                    continue
                 # 科技树全屏页：滚轮滚动列表，不缩放世界
                 if self.tech_panel.open:
                     self.tech_panel.scroll_by(-e.y * 48)
@@ -585,6 +607,11 @@ class Game:
             if self.craft_panel.open:
                 # 手搓面板：拖动滚动左侧产物列表（触屏设备主要靠这个）
                 self.craft_panel.scroll_by(-dy)
+                return
+            if self.machine_panel.open and getattr(
+                    self.machine_panel, "_picker", False):
+                # 机器面板的配方选择器：拖动同样能滚
+                self.machine_panel.scroll_by(-dy)
                 return
             if self.bag_panel.open or self.filter_panel.open:
                 return  # 面板开着别拖世界
@@ -921,6 +948,15 @@ class Game:
         holding_inserter = self.selected_building == C.B_INSERTER
 
         if has_inserter:
+            # M10：分拣器是 overlay，格子建筑层还是空的——手里拿别的建筑
+            # （尤其传送带）时这一击必须让给放置流程，否则带子永远铺不到
+            # 分拣器下面（"带子从臂下穿过"就成了摆设）。
+            # 手里还是分拣器 / 查看模式 / 放不下 → 面板给玩家改过滤、拆除。
+            if (not self.ui.view_mode
+                    and self.selected_building is not None
+                    and self.selected_building != C.B_INSERTER
+                    and self.grid.can_place(gx, gy)):
+                return False
             self.filter_panel.show(self.screen.get_size(), (gx, gy),
                                    self.grid.get_overlay_filter(gx, gy),
                                    self.grid.get_overlay_dir(gx, gy))
@@ -930,34 +966,40 @@ class Game:
             return False
         m = self.machines.get_machine(gx, gy)
         if m is not None:
+            self.machine_panel.sim = self.sim
             self.machine_panel.show(m, self.screen.get_size(), self.tech.researched,
                                     self.inventory)
             return True
         chest = self.chests.get(gx, gy)
         if chest is not None:
             self.storage_panel.show(self.screen.get_size(), "箱子", chest,
-                                    C.CHEST_STACK, self.inventory)
+                                    C.CHEST_STACK, self.inventory,
+                                    cell=(gx, gy), sim=self.sim)
             return True
         mn = self.miners.get(gx, gy)
         if mn is not None:
             self.storage_panel.show(self.screen.get_size(), "采矿机", mn,
                                     C.MINER_BUFFER_CAP, self.inventory,
-                                    total_cap=C.MINER_BUFFER_CAP)
+                                    total_cap=C.MINER_BUFFER_CAP,
+                                    cell=(gx, gy), sim=self.sim)
             return True
         em = self.dyson.get(gx, gy)
         if em is not None:
             self.storage_panel.show(self.screen.get_size(), "太阳帆发射器", em,
                                     C.DYSON_EMITTER_STORE_CAP, self.inventory,
-                                    allowed={C.I_SOLAR_SAIL})
+                                    allowed={C.I_SOLAR_SAIL},
+                                    cell=(gx, gy), sim=self.sim)
             return True
         # 科研站（M6.11）：点开双模式面板
         lab = self.labs.get_lab(gx, gy)
         if lab is not None:
+            self.lab_panel.sim = self.sim
             self.lab_panel.show(lab, self.labs, gx, gy,
                                 self.screen.get_size(), self.inventory)
             return True
         tw = self.towers.get_tower(gx, gy)
         if tw is not None:
+            self.tower_panel.sim = self.sim
             self.tower_panel.show(tw, self.screen.get_size())
             return True
         # 发射台（M5b）
@@ -1094,7 +1136,9 @@ class Game:
         self._tick_mining(dt)
         # 成就弹窗靠每帧动画，暂停也继续走
         self.ach.update(dt)
-        if not self.paused and not self.menu.open and not self.mods_panel.open:
+        if self._netmode:
+            self._update_net(dt)
+        elif not self.paused and not self.menu.open and not self.mods_panel.open:
             # M6.24：全部模拟推进在服务器端（含传送带重建/网络 sync）
             self.sim.step(dt)
             # mod 钩子：on_step 在步进后、事件收集前
@@ -1129,6 +1173,87 @@ class Game:
                                  pygame.K_LEFT, pygame.K_RIGHT)):
             self.camera.pan(keys, dt)
 
+    # ---------- M15b 联机 ----------
+
+    def attach_net(self, client):
+        """进入联机模式：本地 sim 变镜像，指令全部转发服务端。"""
+        self.net = client
+        self._mirror_sim = self.sim
+        client.mirror = self._mirror_sim
+        from ..net.client import RemoteSim
+        self.sim = RemoteSim(client)
+        # 面板里已注入的 sim 也要换代理（指令才走网络）
+        for _p in (self.machine_panel, self.lab_panel, self.storage_panel,
+                   self.tower_panel):
+            _p.sim = self.sim
+        self.tech_panel._sim = self.sim
+        client.on_events = self._net_on_events
+        client.on_dirty = self._net_on_dirty
+        client.on_chat = self._net_on_chat
+        client.on_keyframe = self._net_on_keyframe
+        client.on_disconnect = self._net_on_disconnect
+        self._netmode = True
+        # M15c：比对服务端/本地 mod 清单（差异不致命，但内容显示会缺）
+        srv_mods = set(getattr(client, "server_mods", []) or [])
+        my_mods = {(c.name, c.version) for c in self.mod_mgr.ctxs}
+        if srv_mods != my_mods:
+            missing = srv_mods - my_mods
+            extra = my_mods - srv_mods
+            if missing:
+                self._toast_msg(
+                    "服务端 mod 本地缺失："
+                    + "、".join(n for n, _ in sorted(missing))[:40]
+                    + "（相关内容显示为占位）", 4.0)
+            elif extra:
+                self._toast_msg("本地 mod 多于服务端（仅影响本机显示）", 3.0)
+
+    def _update_net(self, dt: float):
+        """联机帧更新：不 step，只消费网络消息。"""
+        self.net.poll()
+
+    def _net_on_events(self, events):
+        for ev in events:
+            self.mod_mgr.emit(ev)
+            if ev[0] == "toast":
+                self._toast_msg(ev[1], ev[2])
+            elif ev[0] == "achievement":
+                self.ach.push(ev[1], ev[2])
+
+    def _net_on_dirty(self, cells):
+        for cx, cy in cells:
+            self.chunks.invalidate_cell(cx, cy)
+
+    def _net_on_chat(self, player, text):
+        self._toast_msg(f"{player}: {text}", 3.0)
+        print(f"[聊天] {player}: {text}")
+
+    def _net_on_keyframe(self):
+        """关键帧覆盖镜像后：渲染/面板全部跟着换血。"""
+        mirror = self._mirror_sim
+        self._ensure_world(mirror.world_index)
+        self._activate_world(mirror.world_index)
+        for ch in self._chunk_views:
+            ch.clear()
+        # 面板持有旧对象引用，快照换了整批 → 全部关掉，防陈旧引用写坏显示
+        self.machine_panel.close()
+        self.lab_panel.close()
+        self.storage_panel.close()
+        self.tower_panel.close()
+
+    def _net_on_disconnect(self, reason: str):
+        self._toast_msg(f"联机断开：{reason}", 4.0)
+        print(f"[net] 断开: {reason}")
+        # 退回单机：把镜像 sim 装回来当本地权威（可继续单人玩这张图）
+        self._netmode = False
+        self.sim = self._mirror_sim
+        for _p in (self.machine_panel, self.lab_panel, self.storage_panel,
+                   self.tower_panel):
+            _p.sim = self.sim
+        self.tech_panel._sim = self.sim
+        if self.net is not None:
+            self.net.close()
+            self.net = None
+
     # ---------- 存档 ----------
 
     def _toast_msg(self, text: str, secs: float = 2.0):
@@ -1146,7 +1271,10 @@ class Game:
             print(f"[存档失败] {e}")
 
     def _quick_save(self):
-        """F5：立刻存到当前槽（不弹面板）。"""
+        """F5：立刻存到当前槽（不弹面板）。联机时存档归服务端。"""
+        if self._netmode:
+            self._toast_msg("联机模式：存档由服务端负责", 2.5)
+            return
         try:
             name = self.saves.slot_file(self.current_slot)
             path = self.saves.save(self.sim, name)
@@ -1223,7 +1351,10 @@ class Game:
         self.save_panel.close()
 
     def _load_game(self, name: str, label: str | None = None):
-        """按名字读档 + 收尾（槽位面板与自动档共用）。"""
+        """按名字读档 + 收尾（槽位面板与自动档共用）。联机时禁本地读档。"""
+        if self._netmode:
+            self._toast_msg("联机模式：存档由服务端负责", 2.5)
+            return
         try:
             if not self.saves.exists(name):
                 self._toast_msg("没有这个存档")
@@ -1253,9 +1384,29 @@ class Game:
                 self._apply_ui_action("select", C.B_BELT)
             self._toast_msg(f"已读档 {label if label else name}")
             print(f"[读档] 成功 {name}")
+            self._warn_power_partition()
         except Exception as e:
             self._toast_msg(f"读档失败: {e}", 3.0)
             print(f"[读档失败] {e}")
+
+    def _warn_power_partition(self):
+        """读档后提示电网分区状态（M14b 取消"无塔=全球一张网"后的必要引导）。
+
+        旧档里机器离发电机超过 8 格又没有电力塔时，现在会真的分成几张网，
+        缺电的网直接停摆——不说一句玩家会以为是 bug。
+        """
+        try:
+            self.power.update(0.0)
+            nets = self.power.net_count
+            starved = self.power.starved_nets()
+        except Exception:
+            return
+        if starved > 0:
+            self._toast_msg(
+                f"电网已按 8 格分区：{starved} 张网缺电（共 {nets} 张），"
+                f"用电力塔把发电并过来", 5.0)
+        elif nets > 1:
+            self._toast_msg(f"电网按 8 格分成 {nets} 张网（电力塔可并网）", 3.0)
 
     # ---------- 渲染 ----------
 
@@ -1267,6 +1418,7 @@ class Game:
             return
         self.screen.fill(C.C_BG)
         self.chunks.draw(self.screen, self.camera)
+        self._draw_fluids()
         self._draw_items()
         self._draw_inserters()
         self._draw_machine_status()
@@ -1305,6 +1457,52 @@ class Game:
             self.mods_panel.draw(self.screen)
         self.ach.draw(self.screen)
         pygame.display.flip()
+
+    def _draw_fluids(self):
+        """管道/储罐里的液面（M14）：每格按 液量/容量 画一条液柱。
+
+        只遍历**已建的液体格**（几十~几百个），再按屏幕范围剔除，
+        不做 512×512 全图扫描。液柱颜色取液体色，混合格画主色 + 副色细边。
+        """
+        pipes = getattr(self.sim, "pipes", None)
+        if pipes is None:
+            return
+        pipes._ensure()
+        cells = pipes.cells
+        if not cells:
+            return
+        size = self.screen.get_size()
+        sw, sh = size
+        cam = self.camera
+        tpx = cam.tile_px
+        if tpx < 3:
+            return
+        amt = pipes.amt
+        fid = pipes.fid
+        cap = pipes.cap
+        # 可视格范围（世界坐标，环绕不需要特殊处理：相机是卷绕的，
+        # 直接算屏幕位置再剔除最简单）
+        for i, (gx, gy) in enumerate(cells):
+            a = float(amt[i])
+            if a <= C.FLUID_EPS:
+                continue
+            f = int(fid[i])
+            sx, sy = cam.world_to_screen(gx * C.TILE, gy * C.TILE, size)
+            sx, sy = int(sx), int(sy)
+            if sx + tpx < 0 or sy + tpx < 0 or sx > sw or sy > sh:
+                continue
+            ratio = max(0.0, min(1.0, a / float(cap[i])))
+            col = C.FLUID_COLORS.get(f, C.FLUID_FALLBACK_COLOR)
+            inset = max(tpx // 5, 1)
+            h = max(1, int((tpx - inset * 2) * ratio))
+            # 液柱从底部往上长
+            rect = pygame.Rect(sx + inset, sy + tpx - inset - h,
+                               max(tpx - inset * 2, 1), h)
+            self.screen.fill(col, rect)
+            if tpx >= 8:
+                # 液面高光线，方便看液位
+                pygame.draw.line(self.screen, _mix_white(col, 0.35),
+                                 rect.topleft, rect.topright, 1)
 
     def _draw_items(self):
         """传送带上的物品：numpy 批量换算屏幕坐标 + 过滤可见，只画可见的。

@@ -22,6 +22,7 @@ from .. import config as C
 from ..logistics import BeltNetwork, DroneNetwork, InserterNetwork, TowerNetwork
 from ..logistics.dyson import DysonNetwork
 from ..logistics.pads import PadsNetwork
+from ..logistics.pipes import FluidNetwork
 from ..power import PowerGrid
 from ..production import ChestNetwork, MachineNetwork, MinerNetwork
 from ..render.camera import Camera
@@ -60,6 +61,9 @@ class WorldState:
         self.power = PowerGrid(self.grid)
         self.power.planet = self.planet
         self.power.dyson = dyson
+        # M14：液体管网（每格独立液量 + 泵）；机器通过它抽/排液体
+        self.pipes = FluidNetwork(self.grid)
+        self.machines.pipes = self.pipes
         self.towers = TowerNetwork(self.grid)
         self.drones = DroneNetwork(self.grid)
         self.pads = PadsNetwork(self.grid)   # M5b 星际物流：发射台
