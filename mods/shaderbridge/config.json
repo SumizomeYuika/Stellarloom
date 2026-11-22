@@ -1,0 +1,9 @@
+{
+  "enabled": true,
+  "pack": "",
+  "world": "auto",
+  "show_ore": true,
+  "show_items": true,
+  "log_gl": true,
+  "max_compile_failures": 6
+}

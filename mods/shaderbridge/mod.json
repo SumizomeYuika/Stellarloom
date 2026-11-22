@@ -1,0 +1,5 @@
+{
+  "name": "shaderbridge",
+  "version": "0.1.0",
+  "description": "光影包支持：让星织直接加载并真执行 Minecraft 光影包（Iris/OptiFine 格式）。世界层改用 GL 绘制，包内 composite/final 全链跑真程序；GL 不可用时自动退回原生绘制。"
+}
