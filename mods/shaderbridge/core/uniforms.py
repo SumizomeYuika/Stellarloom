@@ -202,9 +202,18 @@ class UniformState:
     def apply(self, prog, buffers=None, geometry=False):
         """把本帧状态写进一个已 use 的 program。返回成功设置的 uniform 名列表。
 
-        geometry=True 表示这条 pass 画真实几何（gbuffers 族），
-        slm_mvp 用 proj*mv；否则是后处理全屏四边形，slm_mvp 必须是单位阵。
+        分两条路：
+        - **固定管线矩阵**：compatibility profile 下包里读的是内建
+          gl_ModelViewProjectionMatrix / gl_TextureMatrix——不是 uniform，
+          是 GL 固定管线状态，必须 glLoadMatrix 喂。几何 pass 给
+          proj=gbufferProjection、mv=单位阵；后处理全屏 pass 全给单位阵
+          （全屏四边形顶点是 NDC）。
+        - **OptiFine/Iris uniform**：照常经 prog.set_* 写。
         """
+        # 固定管线矩阵：prog.api 在自检（FakeProg）里不存在，跳过即可
+        api = getattr(prog, "api", None)
+        if api is not None:
+            self._load_matrices(api, geometry)
         done = []
         p = prog
 
@@ -214,21 +223,6 @@ class UniformState:
                     done.append(a[0])
             except Exception:
                 pass
-
-        # ---- slm_* 兼容矩阵：转译器把 gl_ModelViewProjectionMatrix 等
-        # 换成了这些名字，不设置的话顶点全塌成原点。
-        s(p.set_mat4, "slm_proj", self.gbuffer_projection)
-        s(p.set_mat4, "slm_mv", self.gbuffer_model_view)
-        s(p.set_mat4, "slm_mvp", self.mvp if geometry else identity())
-        s(p.set_mat4, "slm_texmat0", identity())
-        # 光照贴图坐标变换：原版把 [0,1] 的 lmcoord 映射到图集里的位置。
-        # 我们全给 1.0（lmcoord 已经是最终值），保持恒等。
-        s(p.set_mat4, "slm_texmat1", identity())
-        s(p.set_vec4, "slm_color", 1.0, 1.0, 1.0, 1.0)
-        # mat3 法线矩阵：单位阵（不需要法线变换）
-        s(p.set_mat3, "slm_normal", [1.0, 0.0, 0.0,
-                                     0.0, 1.0, 0.0,
-                                     0.0, 0.0, 1.0])
 
         s(p.set_float, "viewWidth", self.view_w)
         s(p.set_float, "viewHeight", self.view_h)
@@ -267,6 +261,36 @@ class UniformState:
         s(p.set_vec2, "viewSize", self.view_w, self.view_h)
         s(p.set_vec2, "texelSize", 1.0 / self.view_w, 1.0 / self.view_h)
         return done
+
+    def _load_matrices(self, api, geometry):
+        """喂固定管线矩阵。compatibility profile 下包里读的内建矩阵
+        （gl_ModelViewProjectionMatrix / gl_ModelViewMatrix /
+        gl_ProjectionMatrix / gl_TextureMatrix[N] / gl_NormalMatrix）
+        全从这些状态来。
+
+        几何 pass：projection = gbufferProjection、modelview = 单位阵
+        （顶点已相机相对）；后处理全屏 pass：全单位阵（NDC 四边形）。
+        纹理矩阵 0/1 都给单位阵（UV / lmcoord 已是最终值）。
+        gl_NormalMatrix 由驱动从 modelview 算，随 mv=单位阵自动是单位阵。
+        """
+        from . import glapi
+        try:
+            api.glMatrixMode(glapi.GL_PROJECTION)
+            api.glLoadMatrixf(self.gbuffer_projection if geometry
+                              else identity())
+            api.glMatrixMode(glapi.GL_MODELVIEW)
+            api.glLoadMatrixf(self.gbuffer_model_view if geometry
+                              else identity())
+            ident = identity()
+            cur = api.glGetActiveTexture()
+            for unit in (0, 1):
+                api.glActiveTexture(glapi.GL_TEXTURE0 + unit)
+                api.glMatrixMode(glapi.GL_TEXTURE)
+                api.glLoadMatrixf(ident)
+            api.glActiveTexture(cur)
+            api.glMatrixMode(glapi.GL_MODELVIEW)
+        except Exception:
+            pass
 
     def extra(self, name, default=None):
         return self._extras.get(name, default)

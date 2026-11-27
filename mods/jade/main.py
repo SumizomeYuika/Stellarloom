@@ -28,7 +28,7 @@ import numpy as np
 import pygame
 
 from stellarloom import config as C
-from stellarloom.api import ModAPIError
+from stellarloom.api import EnvType, ModAPIError
 from stellarloom.registry import (BUILDING_REGISTRY, ITEM_REGISTRY,
                                   VANILLA as VANILLA_NS)
 try:
@@ -599,6 +599,9 @@ def _draw_jade(game):
 # 生命周期
 # =====================================================================
 
+# M15d：jade 是纯渲染 mod（mixin 到 Game._draw_ui），服务端 headless
+# 没有前端，on_load 整段跳过（@EnvType("client")）。
+@EnvType("client")
 def on_load(ctx):
     global _CFG
     _CFG = ctx.cfg   # 作者默认 config.json ⊕ 用户 mods/config/jade.json

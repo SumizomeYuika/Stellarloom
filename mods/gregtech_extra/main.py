@@ -36,6 +36,7 @@ import numpy as np
 import pygame
 
 from stellarloom import config as C
+from stellarloom.api import EnvType
 from stellarloom.production.machines import Machine, MachineNetwork
 from stellarloom.render.layers import ChunkRenderer
 from stellarloom.ui import touch_ui as TUI
@@ -684,6 +685,7 @@ def _paint_gt2(surf, rect, tile_px, btype):
             pygame.draw.circle(surf, darkc, (cx, cy), max(tile_px // 8, 1))
 
 
+@EnvType("client")   # M15d：chunk 渲染补丁，服务端（headless）跳过
 def after_build(self, result, cix, ciy, tile_px, **kw):
     """ChunkRenderer._build after：把本 mod 的建筑格子画上图案。"""
     if result is None:
@@ -737,6 +739,7 @@ def _install_mixins(ctx):
               after_remove, wrap="after")
 
     # 点放机器 → 开面板
+    @EnvType("client")   # M15d：UI 补丁（开面板是前端行为），服务端跳过
     def after_place_or_harvest(self, result, gx, gy, confirm_only, **kw):
         b = self.grid.get(gx, gy)
         if b in MACHINE_TYPES:
@@ -748,6 +751,7 @@ def _install_mixins(ctx):
               after_place_or_harvest, wrap="after")
 
     # 机器面板标题：新机器显示自己的名字（复用重工已验证的覆盖法）
+    @EnvType("client")   # M15d：UI 补丁，服务端跳过
     def after_machine_draw(self, result, screen, **kw):
         m = self.machine
         if m is not None and m.btype in MACHINE_TYPES + RING_TYPES:
@@ -767,6 +771,7 @@ def _install_mixins(ctx):
               after_machine_draw, wrap="after")
 
     # 手搓目录刷新（面板在 mod 加载前已构造）
+    @EnvType("client")   # M15d：UI 补丁，服务端跳过
     def after_craft_show(self, result, screen_size, inventory, **kw):
         try:
             newcat = {}
@@ -829,12 +834,10 @@ def on_load(ctx):
         except Exception:
             pass
 
-    ctx.log("内容：5 种新矿脉 / 30 条配方（含 8 台新建筑）/ 8 项科技")
-    ctx.log("多方块：耐热砖块+大型高炉核心 / 合金框架+重型装配平台核心")
-    ctx.log("聚变供电：反应堆烧氘芯 → 氦-3 + 等离子体，并入电网")
+    
     if _CFG.get("toasts", True):
         ctx.toast("格雷科技·星海扩展 已加载：新矿脉 / 聚变供电 / 多方块结构", 4.0)
-    ctx.log(f"加载 gregtech_extra v1.1 —— 依赖 gregtech_heavy >=1.0；"
+    ctx.log(f"加载 gregtech_extra v1.1 "
             f"reactor_power={REACTOR_POWER} veins={VEIN_COUNTS}")
 
 

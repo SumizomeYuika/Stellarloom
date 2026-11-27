@@ -10,14 +10,15 @@
   因为很多分支是编译期决定的（`#if BLOOM_STRENGTH > 0`）。
   所以选项签名一变就整批失效。
 
-依赖注入：packscan 给选项表，preproc 展开源码，glsl_es 转译，
-program 编译。这里只做编排。
+依赖注入：packscan 给选项表，preproc 展开源码，glsl_min 极简预处理
+（不做结构重写，直接交给 GL compatibility profile 编译），program 编译。
+这里只做编排。
 """
 
 import hashlib
 import os
 
-from . import glsl_es, passes, preproc, program, setters
+from . import glsl_min, passes, preproc, program, setters
 
 
 def option_defines(info):
@@ -72,6 +73,16 @@ class ShaderChain:
         self.shaders_dir = os.path.join(pack_root, "shaders")
         if os.path.basename(os.path.normpath(pack_root)) == "shaders":
             self.shaders_dir = pack_root
+        # 包源：zip 直读时来自 scan_pack；目录包兼容构造 DirSource。
+        # 之后所有读文件都走 source，不再碰 os。
+        from . import packscan
+        self.source = getattr(info, "source", None)
+        if self.source is None:
+            self.source = packscan.DirSource(self.shaders_dir)
+        if getattr(self.source, "is_zip", False):
+            # zip 的 shaders_dir 只是逻辑前缀（canonical 键 "shaders/..."），
+            # 不是磁盘路径——join 出来的相对键交给 ZipSource 解析。
+            self.shaders_dir = "shaders"
         self.info = info
         self.world = world
         self.defines = dict(defines or {})
@@ -114,7 +125,8 @@ class ShaderChain:
             return self._const_overrides
         ov = {}
         if self.const_values:
-            files = setters.const_option_files(self.shaders_dir, self.info)
+            files = setters.const_option_files(self.shaders_dir, self.info,
+                                               source=self.source)
             for name, val in self.const_values.items():
                 path = files.get(name)
                 if not path:
@@ -122,9 +134,8 @@ class ShaderChain:
                 text = ov.get(path)
                 if text is None:
                     try:
-                        text = open(path, "r", encoding="utf-8",
-                                    errors="replace").read()
-                    except OSError:
+                        text = self.source.read_canonical(path)
+                    except Exception:
                         continue
                 new_text, n = setters.patch_source_for_options(
                     text, self.info, {name: val})
@@ -140,7 +151,9 @@ class ShaderChain:
         props = self._read_props()
         self.specs = passes.build_passes(self.info, self.world, props)
 
-        pp = preproc.Preprocessor(self.shaders_dir, self.defines)
+        pp = preproc.Preprocessor(self.shaders_dir, self.defines,
+                                  source=self.source)
+        pp.set_overrides(self._overrides())
         pre_results = {}
         for spec in self.specs:
             res = CompileResult(spec.name)
@@ -179,12 +192,10 @@ class ShaderChain:
         return ok_n, len(self.failures)
 
     def _read_props(self):
-        path = os.path.join(self.shaders_dir, "shaders.properties")
-        if not os.path.isfile(path):
+        if not self.source.exists("shaders.properties"):
             return {}
         from .packscan import _parse_properties
-        return _parse_properties(
-            open(path, "r", encoding="utf-8", errors="replace").read())
+        return _parse_properties(self.source.read("shaders.properties"))
 
     def _build_one(self, pp, spec):
         """预处理 + 转译一个 pass。返回 (vsh, fsh, drawbuffers, notes, degraded)。"""
@@ -194,7 +205,7 @@ class ShaderChain:
             return None
         # 片段
         r = pp.build(spec.fsh_rel, "FRAGMENT", self.defines)
-        t = glsl_es.transpile(r["src"], "FRAGMENT", r["drawbuffers"])
+        t = glsl_min.transpile(r["src"], "FRAGMENT", r["drawbuffers"])
         fsh = t.src
         notes += t.notes
         degraded += t.degraded
@@ -205,7 +216,7 @@ class ShaderChain:
         # 顶点：没有就用全屏四边形着色器
         if spec.vsh_rel:
             rv = pp.build(spec.vsh_rel, "VERTEX", self.defines)
-            tv = glsl_es.transpile(rv["src"], "VERTEX", None)
+            tv = glsl_min.transpile(rv["src"], "VERTEX", None)
             vsh = tv.src
             notes += tv.notes
             degraded += tv.degraded

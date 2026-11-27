@@ -186,8 +186,8 @@ class Game:
 
         self.mod_mgr = load_mods(self, self._mods_dir,
                                  progress=_mod_progress)
-        for name, err in self.mod_mgr.failed:
-            self._toast_msg(f"mod {name} 加载失败：{err}", 3.5)
+        # M15d：mod 加载出错会直接抛上来（crash_guard 接管写崩溃报告），
+        # 不再有 failed 隔离名单可 toast。
 
         self._stage("主菜单")
         self._open_menu()   # 启动即主菜单（世界暂停在背后）
@@ -1180,8 +1180,16 @@ class Game:
         self.net = client
         self._mirror_sim = self.sim
         client.mirror = self._mirror_sim
+        # M15d：镜像拨到服务端分配的 player_id——背包/手搓只读自己的
+        # （关键帧是全量存档，别的玩家背包也在镜像里但不被当作"当前玩家"）
+        self._mirror_sim.ensure_player(client.player_id)
+        self._mirror_sim.player_index = client.player_id
         from ..net.client import RemoteSim
         self.sim = RemoteSim(client)
+        # Game 构造时缓存的背包/队列引用指向 players[0]，换成自己的
+        self.inventory = self._mirror_sim.inventory
+        self.craft = self._mirror_sim.craft
+        self.craft_panel.queue = self.craft
         # 面板里已注入的 sim 也要换代理（指令才走网络）
         for _p in (self.machine_panel, self.lab_panel, self.storage_panel,
                    self.tower_panel):

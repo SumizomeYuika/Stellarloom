@@ -205,6 +205,8 @@ class NetServer:
             sess.close("bad proto")
             return
         sess.name = str(msg.get("name", "?"))[:24] or "?"
+        # M15d：给新玩家开独立背包/手搓队列（世界/科技/戴森球共享）
+        self.sim.ensure_player(sess.player_id)
         with self._players_lock:
             self.players.append(sess)
         self._note(f"{sess.name} 加入 (id={sess.player_id})")
@@ -233,11 +235,14 @@ class NetServer:
             return {"type": "ack", "seq": msg.get("seq", 0),
                     "result": None, "error": f"sim 没有 {name}"}
         try:
-            if CMDS.COMMANDS[name] and isinstance(world, int):
-                with self.sim.with_world(world):
+            # M15d：指令带玩家——背包/手搓/容器取放都落在发起者自己身上，
+            # 世界作用域照旧（with_world），两层都是进出还原。
+            with self.sim.with_player(sess.player_id):
+                if CMDS.COMMANDS[name] and isinstance(world, int):
+                    with self.sim.with_world(world):
+                        result = fn(*args, **kwargs)
+                else:
                     result = fn(*args, **kwargs)
-            else:
-                result = fn(*args, **kwargs)
         except Exception as e:
             return {"type": "ack", "seq": msg.get("seq", 0),
                     "result": None,
@@ -319,11 +324,13 @@ class NetServer:
         return {"type": "keyframe", "tick": self.tick, "blob": P.b64e(blob)}
 
     def _inv_sig(self):
-        """玩家级状态的廉价签名：变了就重建关键帧。"""
-        inv = tuple(sorted(self.sim.inventory.items()))
+        """玩家级状态的廉价签名：变了就重建关键帧（M15d：全部玩家的背包）。"""
+        inv = tuple((pid, tuple(sorted(ps.inventory.items())))
+                    for pid, ps in sorted(self.sim.players.items()))
         t = self.sim.tech
         return (inv, len(t.researched), t.current, len(t.queue),
-                self.sim.craft.job is not None)
+                tuple(ps.craft.job is not None
+                      for _, ps in sorted(self.sim.players.items())))
 
     def _broadcast(self, msg: dict, exclude: ClientSession | None = None):
         with self._players_lock:
@@ -341,16 +348,16 @@ class NetServer:
     # ---------- mod（M15c：服务端也是权威，逻辑 mod 必须装在这里） ----------
 
     def load_mods(self, mods_dir=None):
-        """在服务端 sim 上加载 mods（与单机同一套失败隔离/依赖拓扑）。
+        """在服务端 sim 上加载 mods（M15d：出错即崩 + @EnvType 侧标过滤）。
 
         返回加载到的 [(name, version)]，握手时随 hello_ack 发给客户端做比对。
         """
         from ..mod import load_mods
         shim = _ServerGameShim(self.sim)
-        self.mod_mgr = load_mods(shim, mods_dir)
+        # M15d：side="server"——@EnvType("client") 的 UI mixin/on_load 跳过；
+        # mod 出错直接 raise 崩服务端进程（不再失败隔离，与单机同一原则）。
+        self.mod_mgr = load_mods(shim, mods_dir, side="server")
         self.mods_meta = [(c.name, c.version) for c in self.mod_mgr.ctxs]
-        for name, err in self.mod_mgr.failed:
-            self._note(f"mod {name} 加载失败: {err}")
         self._note(f"mod 加载 {len(self.mods_meta)} 个"
                    + (": " + ", ".join(n for n, _ in self.mods_meta)
                       if self.mods_meta else ""))
@@ -368,9 +375,11 @@ class NetServer:
             h.update(g.building.tobytes())
             h.update(g.direction.tobytes())
             h.update(g.overlay.tobytes())
-        for item, n in sorted(self.sim.inventory.items()):
-            h.update(item.to_bytes(4, "little"))
-            h.update(n.to_bytes(4, "little", signed=True))
+        for pid, ps in sorted(self.sim.players.items()):
+            h.update(pid.to_bytes(4, "little"))
+            for item, n in sorted(ps.inventory.items()):
+                h.update(item.to_bytes(4, "little"))
+                h.update(n.to_bytes(4, "little", signed=True))
         for ws in self.sim.worlds:
             for lane in ws.belts.lanes:
                 h.update(lane.positions.tobytes())
@@ -389,6 +398,10 @@ class _ServerGameShim:
 
 
 def main(argv=None) -> int:
+    # M15d：未捕获异常按 Java 风格栈打印（模块.类.方法:行号，不显示路径）。
+    # 服务端没有 crash_guard（那是客户端 mod），所以在这里装。
+    from ..core.errfmt import install_excepthook
+    install_excepthook()
     ap = argparse.ArgumentParser(description="StellarLoom 专用服务端")
     ap.add_argument("--port", type=int, default=27715)
     ap.add_argument("--tickrate", type=int, default=20)

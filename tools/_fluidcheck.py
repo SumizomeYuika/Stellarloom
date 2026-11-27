@@ -254,7 +254,7 @@ def main() -> int:
     tmp = tempfile.mkdtemp(prefix="slm_fluid_")
     sm = SaveManager(tmp)
     sm.save(g1, "t.slm")
-    check(SAVE_VERSION == 13, f"存档版本 {SAVE_VERSION}（期望 13）")
+    check(SAVE_VERSION == 14, f"存档版本 {SAVE_VERSION}（期望 14）")
     g2 = Game(screen)
     g2.menu.open = False
     g2.mod_mgr.unload()

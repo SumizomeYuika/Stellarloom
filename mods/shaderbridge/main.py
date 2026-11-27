@@ -2,7 +2,9 @@
 
 设计约束（用户已确认）：
 - **不改源码、纯 mod**。世界层的 GL 绘制靠 mixin 顶替 ChunkRenderer.draw。
-- **失败必须静默降级**。任何一步不行（没 GLES3、EGL 建不出来、包编译失败）
+- **仅支持 Windows 桌面**（用户拍板）。GL 走 PyOpenGL + WGL 离屏上下文，
+  需要桌面 OpenGL >= 3.3。GLES/EGL/ANGLE 那套跨平台复杂度已全部砍掉。
+- **失败必须静默降级**。任何一步不行（没 GL3.3、WGL 建不出来、包编译失败）
   都退回 pygame 原生绘制，游戏照常玩。这是硬约束：光影是加分项，不是必需项。
 - **真的执行包里的 composite 与 final**。不是把包当"滤镜参数表"读。
 
@@ -113,10 +115,6 @@ def _pack_search_dirs(ctx):
         # 3) 游戏根目录本身（用户可能直接把 shaders/ 放在这）
         if os.path.isdir(os.path.join(game_root, "shaders")):
             dirs.append(game_root)
-    # 4) 常见安卓路径
-    for p in ("/sdcard/shaderpacks", "/sdcard/Download/shaderpacks"):
-        if os.path.isdir(p):
-            dirs.append(p)
     return dirs
 
 
@@ -131,12 +129,12 @@ def _game_root(ctx):
 
 
 def _has_shaders(path):
-    """一个目录是不是光影包根（有 shaders/ 或自己就是 shaders）。"""
-    if not os.path.isdir(path):
+    """目录或 zip 是否是光影包根（有 shaders/ 或自己就是 shaders）。"""
+    try:
+        packscan = _core("packscan")
+        return packscan.pack_has_shaders(path)
+    except Exception:
         return False
-    if os.path.isdir(os.path.join(path, "shaders")):
-        return True
-    return os.path.basename(os.path.normpath(path)) == "shaders"
 
 
 def find_packs(ctx, cfg):
@@ -223,14 +221,20 @@ def _setup_gl(ctx, cfg):
     _log(ctx, "选中光影包 %s（%d 入口，%d 选项）"
          % (info.name, len(info.programs), len(info.options)))
 
-    # 2) GL 后端探测：先确认真有 GLES3 上下文可用
+    # 2) GL 探测：只查 PyOpenGL + 桌面 GL 一条路（Windows 专用）
     glctx = _core("glctx")
-    ok, probe = glctx.find_gl_backend()
+    ok, probe = glctx.probe()
     if cfg.get("log_gl", True):
-        _log(ctx, "GL 探测: %s" % probe.summary())
-    # 注意：这里的 probe 可能因为没有当前上下文而失败，这是正常的——
-    # 真正的上下文由 composite_gl 里的 EGL 建。所以这里只用来提前排查，
-    # 不作为否决条件。
+        s = probe.summary()
+        if ok:
+            _log(ctx, "GL 探测: %s | %s | %s"
+                 % (s["gl_version"], s["gl_renderer"], s["gl_vendor"]))
+        else:
+            _log(ctx, "GL 探测失败: %s" % "; ".join(s["errors"]))
+    # 无论探测成败都继续：真正的上下文由 composite_gl 建，那里失败才降级。
+    # 探测只是提前把原因写进日志。
+    if not ok:
+        probe.release()
 
     # 3) 编译整条链
     chain = _core("chain")
@@ -371,6 +375,12 @@ def _disable(state, why):
 # 生命周期
 # =====================================================================
 
+# M15d：纯渲染管线的 mod（mixin 顶替 ChunkRenderer.draw / Game._update），
+# headless 服务端整段跳过。
+from stellarloom.api import EnvType as _EnvType
+
+
+@_EnvType("client")
 def on_load(ctx):
     """mod 入口。加载 GL、编译链、打 mixin。失败只 toast 一次。"""
     state = _STATE
@@ -417,7 +427,30 @@ def on_load(ctx):
 
     # 每帧 dt：从 clock 推，Game 没暴露就别猜
     _install_dt_hook(ctx)
+    _install_dirty_hook(ctx)
     _log(ctx, "ShaderBridge 就绪")
+
+
+def _install_dirty_hook(ctx):
+    """世界变化 → 重烘几何。pygame 的 ChunkRenderer._build 在世界变化时
+    触发（建/拆建筑、矿脉变化），借它当地图脏信号，让 world_gl 的
+    顶点缓存只在真的变了才重建。"""
+    state = _STATE
+
+    def after(self, result, *a, **k):
+        comp = state.get("comp")
+        if comp is not None and comp.world is not None:
+            try:
+                comp.world.mark_dirty()
+            except Exception:
+                pass
+        return None
+
+    try:
+        ctx.mixin("stellarloom.render.layers.ChunkRenderer", "_build",
+                  after, wrap="after")
+    except Exception as e:
+        _log(ctx, "脏标记钩子失败（几何将每帧重烘，仅性能损失）: %s" % e)
 
 
 def _install_dt_hook(ctx):

@@ -32,6 +32,24 @@ from . import config as C
 # 保证未来 API 变更时老包能被明确拒绝而不是神秘炸掉。
 API_VERSION = 1
 
+# M15d：当前加载侧（"client" 游戏前端 / "server" headless 服务端）。
+# 由 ModManager 在 import 任何 mod 之前设置，mod 顶层可以据此决定是否
+# import pygame / render / ui —— 服务端根本没有这些模块。
+_SIDE = "client"
+
+
+def set_side(side: str) -> None:
+    global _SIDE
+    _SIDE = "server" if str(side).lower() == "server" else "client"
+
+
+def current_side() -> str:
+    return _SIDE
+
+
+def is_server() -> bool:
+    return _SIDE == "server"
+
 
 class ModAPIError(Exception):
     """API 用错（id 冲突 / 参数非法）。mod 会被加载器判失败并回滚。"""
@@ -133,6 +151,34 @@ def collect_mixins(module) -> list:
             if isinstance(obj, type) and hasattr(obj, "_slm_mixin_target")]
 
 
+# ---------- M15d：@EnvType 侧标（Forge 风格 client/server/both） ----------
+
+def EnvType(side: str):
+    """侧标装饰器：@EnvType("client") / @EnvType("server") / @EnvType("both")。
+
+    可标：@Mixin 类、mixin 方法（@Inject/@Overwrite 函数或 ctx.mixin 的
+    wrapper）、on_load 函数。缺省 = both（旧 mod 行为不变）。
+    - "client"：仅客户端（有 pygame 的游戏前端）应用；服务端 load_mods
+      （side="server"，见 NetServer.load_mods）一律跳过。
+    - "server"：仅服务端应用；客户端跳过。
+    - "both"：两侧都装。
+    """
+    if side not in ("client", "server", "both"):
+        raise ModAPIError(
+            f"@EnvType 只接受 client/server/both，收到 {side!r}")
+
+    def deco(obj):
+        obj._slm_env = side
+        return obj
+    return deco
+
+
+def env_ok(obj, side: str) -> bool:
+    """对象（类/函数）的侧标是否允许在当前侧（client/server）应用。"""
+    env = getattr(obj, "_slm_env", "both")
+    return env == "both" or env == side
+
+
 # 注解式 mixin 的注入函数全局去重表（跨 ctx 防重复包装；卸载时清）
 _APPLIED_MIXIN_IDS: set[int] = set()
 
@@ -163,6 +209,9 @@ class ModContext:
         # M12：单文件包解压目录（目录 mod 为 None）+ _lib 依赖目录
         self._mod_dir = None
         self._lib_dir = None
+        # M15d：当前侧（"client" 游戏前端 / "server" headless 服务端），
+        # 由加载器注入；@EnvType 侧标据此过滤 mixin/on_load
+        self._side = "client"
 
     # ---------- 交互 ----------
 
@@ -242,9 +291,15 @@ class ModContext:
     def mixin(self, target: str, method: str, wrapper, wrap: str = "before"):
         """运行时打补丁。target = 点分路径，如
         "stellarloom.sim.simulation.Simulation"，或类对象；wrap =
-        before|after|replace。原方法引用被记住，卸载时还原。"""
+        before|after|replace。原方法引用被记住，卸载时还原。
+        M15d：wrapper 可用 @EnvType("client"/"server") 标侧，与当前侧
+        不符时本调用静默跳过（不落补丁，卸载自然也无需还原）。"""
         if wrap not in ("before", "after", "replace"):
             raise ModAPIError(f"mixin wrap 必须是 before/after/replace，收到 {wrap!r}")
+        if not env_ok(wrapper, self._side):
+            self.log(f"mixin {wrap} {target}.{method} 侧标 "
+                     f"{getattr(wrapper, '_slm_env', '?')}，本侧 {self._side} 跳过")
+            return
         cls = target if isinstance(target, type) else _resolve(target)
         if not hasattr(cls, method):
             raise ModAPIError(f"mixin 目标 {target} 没有方法 {method}")
@@ -275,6 +330,11 @@ class ModContext:
         自动被加载器调用；on_load 里也可手动补注册。
         已应用过的注入函数（id 去重）不会重复包装。"""
         global _APPLIED_MIXIN_IDS
+        # M15d：整个 @Mixin 类标了 @EnvType 且与本侧不符 → 全类跳过
+        if not env_ok(cls, self._side):
+            self.log(f"mixin 类 {cls.__name__} 侧标 "
+                     f"{getattr(cls, '_slm_env', '?')}，本侧 {self._side} 跳过")
+            return
         target = cls._slm_mixin_target
         target_cls = _resolve(target) if isinstance(target, str) else target
         for name in vars(cls):
@@ -282,6 +342,11 @@ class ModContext:
             inject = getattr(fn, "_slm_inject", None)
             overwrite = getattr(fn, "_slm_overwrite", None)
             if inject is None and overwrite is None:
+                continue
+            # M15d：单个 mixin 方法的 @EnvType 过滤
+            if not env_ok(fn, self._side):
+                self.log(f"mixin 注入函数 {cls.__name__}.{name} 侧标 "
+                         f"{getattr(fn, '_slm_env', '?')}，本侧 {self._side} 跳过")
                 continue
             if id(fn) in _APPLIED_MIXIN_IDS:
                 self.log(f"mixin 注入函数 {cls.__name__}.{name} 已应用过，跳过")

@@ -495,7 +495,57 @@ def main():
         print(f"\n迁移 {mbad} 项 FAIL")
         return 1
     print("\n迁移链全部 PASS")
+
+    # ---------- v14（M15d）：按玩家分背包 ----------
+    print("\n[v14] 按玩家分背包:")
+    from stellarloom.sim.sim import Simulation
+    pbad = 0
+    s = Simulation()
+    s.players[0].inventory[C.I_GEAR] = 4          # 本地玩家
+    s.ensure_player(1).inventory[C.I_IRON_PLATE] = 9   # 联机玩家 1
+    d14 = sm.dump(s)
+    if d14.get("version") != SAVE_VERSION:
+        print(f"  !! dump 版本不是 {SAVE_VERSION}: {d14.get('version')}")
+        pbad += 1
+    pl = d14.get("players") or {}
+    if pl.get("1", {}).get("inventory", {}).get("stellarloom:iron_plate") != 9:
+        print(f"  !! players[1] 没进存档: {pl.keys()}")
+        pbad += 1
+    s2 = Simulation()
+    sm.load_into(s2, d14)
+    if s2.players.get(1) is None or s2.players[1].inventory.get(C.I_IRON_PLATE) != 9:
+        print(f"  !! 读档后 players[1] 背包错: {s2.players.keys()}")
+        pbad += 1
+    if s2.players[0].inventory.get(C.I_GEAR) != 4:
+        print("  !! 读档后 players[0] 背包错")
+        pbad += 1
+    # 老档（v13，无 players 表）迁移：共享背包装进 players[0]
+    d13 = copy.deepcopy(d14)
+    d13.pop("players", None)
+    d13["version"] = 13
+    want = {_load_key_local(k): v
+            for k, v in d13["stats"]["inventory"].items()}
+    s3 = Simulation()
+    sm.load_into(s3, d13)
+    if d13["version"] != SAVE_VERSION:
+        print(f"  !! v13 迁移没升到 {SAVE_VERSION}: {d13['version']}")
+        pbad += 1
+    if dict(s3.players[0].inventory) != want:
+        print(f"  !! v13 迁移背包错: {s3.players[0].inventory} != {want}")
+        pbad += 1
+    if len(s3.players) != 1:
+        print(f"  !! 单机档应只有 player 0，实际 {sorted(s3.players)}")
+        pbad += 1
+    if pbad:
+        print(f"\nv14 分背包 {pbad} 项 FAIL")
+        return 1
+    print("  players 表往返 ✓ v13→v14 迁移 ✓ 单机单玩家 ✓")
     return 0
+
+
+def _load_key_local(k):
+    from stellarloom.save.savefile import _load_key
+    return _load_key(k)
 
 
 if __name__ == "__main__":

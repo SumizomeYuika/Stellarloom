@@ -117,8 +117,10 @@ def main() -> int:
 
     print("[4] 双人建造同步:")
     cA.call("place_building", C.B_ASSEMBLER, 45, 45, 0)
-    # 背包里没制造台物品 → 应该被拒；先给服务端发料再测
-    sim.inventory[C.I_ASSEMBLER_ITEM] = 2
+    # 背包里没制造台物品 → 应该被拒；先给**A 自己的**背包发料再测（M15d
+    # 按玩家分背包：指令扣的是发起者 player_id 对应的 PlayerState）
+    invA = sim.players[cA.player_id].inventory
+    invA[C.I_ASSEMBLER_ITEM] = 2
     r = cA.call("place_building", C.B_ASSEMBLER, 45, 45, 0)
     check(r == "ok", f"A 放置返回 {r!r}（期望 ok）")
     got = wait_for(
@@ -135,19 +137,21 @@ def main() -> int:
     check(sim.grid.get(45, 45) == C.B_ASSEMBLER, "服务端状态被污染")
 
     print("[6] 容器/机器指令 + 关键帧回流:")
-    sim.inventory[C.I_IRON_PLATE] = 10
+    invB = sim.players[cB.player_id].inventory
+    invB[C.I_IRON_PLATE] = 10
     r3 = cB.call("set_machine_recipe", 45, 45, "gear")
     check(r3 == "ok", f"B 设配方 {r3!r}")
     n = cB.call("machine_add_input", 45, 45, C.I_IRON_PLATE, 3)
     check(n == 3, f"B 放料返回 {n!r}（期望 3）")
-    check(sim.inventory.get(C.I_IRON_PLATE) == 7,
-          f"服务端背包 {sim.inventory.get(C.I_IRON_PLATE)}（期望 7）")
+    check(invB.get(C.I_IRON_PLATE) == 7,
+          f"服务端 B 背包 {invB.get(C.I_IRON_PLATE)}（期望 7）")
+    # M15d：镜像只读自己的背包——B 的镜像应回流成 7
     ok6 = wait_for(
-        lambda: (cA.poll(), cA.mirror.inventory.get(C.I_IRON_PLATE) == 7)[-1],
-        what="A 镜像背包 7")
-    check(ok6, "关键帧没把背包变化带回 A")
+        lambda: (cB.poll(), cB.mirror.inventory.get(C.I_IRON_PLATE) == 7)[-1],
+        what="B 镜像背包 7")
+    check(ok6, "关键帧没把背包变化带回 B")
     m_srv = sim.machines.get_machine(45, 45)
-    m_cli = cA.mirror.machines.get_machine(45, 45)
+    m_cli = cB.mirror.machines.get_machine(45, 45)
     check(m_srv is not None and m_cli is not None
           and m_cli.recipe_id == m_srv.recipe_id == "gear",
           f"配方不同步: 服务端 {getattr(m_srv, 'recipe_id', '?')} / "

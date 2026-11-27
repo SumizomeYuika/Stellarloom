@@ -2,12 +2,12 @@
 """MOD 系统自检（M6.27，第 21 项）：加载器 + mixin（before/after/replace 全开放）
 + API 内容扩展（物品/配方）+ 钩子（on_step/on_event）+ 卸载还原 + 失败隔离。
 
-临时构造 4 个 mod：
+临时构造若干 mod（M15d：坏 mod 一律 raise，不再进 failed 隔离）：
   stat_mixin   —— after 包 Simulation.place_building 计数
   content      —— before 计数 + replace 包 CraftQueue.update、add_item×2、add_recipe、
                   on_step/on_event 计数
-  bad_syntax   —— main.py 语法错（应单独失败）
-  bad_target   —— mixin 目标不存在（应单独失败）
+  bad_syntax   —— main.py 语法错（加载必须抛异常）
+  bad_target   —— mixin 目标不存在（加载必须抛异常）
 
 跑法：
     $env:PYTHONIOENCODING='utf-8'
@@ -94,15 +94,34 @@ def on_load(ctx):
     ctx.on_event(on_event)
 """)
 
-    write_mod("bad_syntax", "def ::\n")
-    write_mod("bad_target", """
+    # M15d：坏 mod 放独立目录，各自断言"加载直接 raise"（不再进 failed）
+    bad_dir = Path(tempfile.mkdtemp(prefix="slm_modbad_"))
+
+    def write_bad(name, main_src):
+        d = bad_dir / name
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "mod.json").write_text(
+            '{"name": "%s", "version": "1.0"}\n' % name, encoding="utf-8")
+        (d / "main.py").write_text(main_src, encoding="utf-8")
+
+    write_bad("bad_syntax", "def ::\n")
+    write_bad("bad_target", """
 def on_load(ctx):
     def w(self): pass
     ctx.mixin("no.such.module.Class", "m", w, wrap="before")
 """)
 
-    # ---------- 1. 加载与失败隔离 ----------
-    print("[1] 加载与失败隔离:")
+    def expect_raise(fn, substr, label):
+        try:
+            fn()
+        except Exception as e:
+            check(substr in f"{type(e).__name__}: {e}" or substr in str(e),
+                  f"{label} 抛了但信息不含 {substr!r}: {type(e).__name__}: {e}")
+            return
+        check(False, f"{label} 没抛异常（M15d 要求出错即崩）")
+
+    # ---------- 1. 加载 + 坏 mod 直接 raise ----------
+    print("[1] 加载 + 出错即崩:")
     g = Game(screen)
     g.menu.open = False
     g.mod_mgr.unload()   # 先卸掉真实 mods/ 的示例 mod，保持基线干净
@@ -112,11 +131,10 @@ def on_load(ctx):
     orig_upd = CraftQueue.update
     mgr = load_mods(g, tmp)
     names = [c.name for c in mgr.ctxs]
-    print(f"  加载成功 {names}  失败 {[n for n, _ in mgr.failed]}")
+    print(f"  加载成功 {names}")
     check(sorted(names) == ["content", "stat_mixin"],
           f"成功列表错: {names}")
-    check(len(mgr.failed) == 2,
-          f"坏 mod 应隔离 2 个，实际 {len(mgr.failed)}")
+    check(mgr.failed == [], "failed 应恒为空（M15d 出错即崩，不写 failed）")
 
     # ---------- 2. mixin：after / before / replace ----------
     print("[2] mixin 生效:")
@@ -184,6 +202,22 @@ def on_load(ctx):
           "重载列表错")
     mgr2.unload()
 
+    # ---------- 6b. 坏 mod 直接 raise ----------
+    # 注意：load_mods 会先把"上一个还挂着的管理器"卸干净（M15d 单活跃
+    # 管理器），所以坏 mod 断言必须放在 mgr/mgr2 都卸载之后，否则会把
+    # 后面要用的补丁链拆了。
+    print("[6b] 坏 mod 出错即崩:")
+    import shutil as _sh
+    d1 = bad_dir / "only_syntax"
+    d1.mkdir()
+    _sh.copytree(bad_dir / "bad_syntax", d1 / "bad_syntax")
+    expect_raise(lambda: load_mods(g, d1), "SyntaxError", "bad_syntax 加载")
+    d2 = bad_dir / "only_target"
+    d2.mkdir()
+    _sh.copytree(bad_dir / "bad_target", d2 / "bad_target")
+    expect_raise(lambda: load_mods(g, d2), "no.such", "bad_target 加载")
+    print("  bad_syntax / bad_target 均直接 raise ✓")
+
     # ---------- 7. 真实 mods/ 目录（示例 mod 被真实 Game 加载） ----------
     print("[7] 真实 Game 加载:")
     from stellarloom.logistics.belts import BeltNetwork
@@ -205,10 +239,13 @@ def on_load(ctx):
     from stellarloom.mod import ModManager
     mgr3 = ModManager(None, base).load_all()
     names3 = mgr3.available()
-    check(len(names3) == 4, f"available 列表错: {names3}")
+    check(sorted(names3) == ["content", "stat_mixin"],
+          f"available 列表错: {names3}")
     check(mgr3.status_of("content") == "已加载", mgr3.status_of("content"))
-    check(mgr3.status_of("bad_syntax").startswith("加载失败"),
-          f"失败状态错: {mgr3.status_of('bad_syntax')}")
+    # M15d：坏 mod 不再进 failed，status_of 没有"加载失败"态可查，
+    # 未加载的 mod 一律报"未加载"
+    check(mgr3.status_of("ghost_mod") == "未加载",
+          f"未加载状态错: {mgr3.status_of('ghost_mod')}")
     # 禁用 → 写 .disabled 并热重载（content 不再加载）
     mgr3.set_disabled("content", True)
     check(mgr3.is_disabled("content"), "禁用名单没生效")
@@ -285,30 +322,26 @@ def on_load(ctx):
     saved = _json.loads(Path(sp).read_text(encoding="utf-8"))
     check(saved.get("boost") == 2.5 and saved.get("color") == "#000000",
           f"save_config 内容错: {saved}")
-    # 坏作者 config.json → 该 mod 失败，其余照常
+    # 坏作者 config.json → M15d 直接 raise（独立目录，不拖累 base）
     write_mod("badcfg", "def on_load(ctx): pass")
     write_file("badcfg/config.json", "{oops")
     mgr9.unload()   # 先卸，防 content 二次注册冲突
-    mgr9b = ModManager(None, base).load_all()
-    check(any(f == "badcfg" for f, _ in mgr9b.failed),
-          "坏 config.json 没判失败")
-    mgr9b.unload()
+    badcfg_dir = Path(tempfile.mkdtemp(prefix="slm_badcfg_"))
+    import shutil as _sh2
+    _sh2.copytree(base / "badcfg", badcfg_dir / "badcfg")
+    expect_raise(lambda: ModManager(None, badcfg_dir).load_all(),
+                 "config.json", "坏 config.json 加载")
+    # 清走 base 里的 badcfg，后续段落用 base 都是健康 mod
+    _sh2.rmtree(base / "badcfg")
 
     # ---------- 10. 依赖关系（拓扑序 / 版本门禁 / 缺依赖 / 环 / 禁用传导） ----------
+    # M15d：依赖不满足/缺依赖/环一律 raise；好依赖链与坏依赖链分目录测。
     print("[10] 依赖关系:")
     write_mod("dep_a", "def on_load(ctx): pass")
     write_mod("dep_b", "def on_load(ctx): pass",
               '"dependencies": {"dep_a": ">=1.0"}')
     write_mod("dep_e", "def on_load(ctx): pass",
               '"dependencies": {"dep_a": "1.0"}')
-    write_mod("dep_c", "def on_load(ctx): pass",
-              '"dependencies": {"dep_a": ">=2.0"}')   # 版本不满足
-    write_mod("dep_d", "def on_load(ctx): pass",
-              '"dependencies": {"ghost_mod": ""}')    # 缺依赖
-    write_mod("dep_f", "def on_load(ctx): pass",
-              '"dependencies": {"dep_g": ""}')
-    write_mod("dep_g", "def on_load(ctx): pass",
-              '"dependencies": {"dep_f": ""}')        # 环
     mgrA = ModManager(None, base).load_all()
     loadedA = [c.name for c in mgrA.ctxs]
     idxA = {n: i for i, n in enumerate(loadedA)}
@@ -317,23 +350,42 @@ def on_load(ctx):
     check(idxA["dep_a"] < idxA.get("dep_b", 999)
           and idxA["dep_a"] < idxA.get("dep_e", 999),
           "依赖顺序错（A 应在 B/E 前）")
-    failedA = dict(mgrA.failed)
-    check("dep_c" in failedA and "不满足" in failedA["dep_c"],
-          f"版本门禁没生效: {failedA.get('dep_c')}")
-    check("dep_d" in failedA and "缺少依赖" in failedA["dep_d"],
-          f"缺依赖没判: {failedA.get('dep_d')}")
-    check(all(not n.startswith("dep_f") and not n.startswith("dep_g")
-              for n in loadedA), f"依赖环竟加载了: {loadedA}")
-    check(any(k in ("dep_f", "dep_g") and "依赖环" in v
-              for k, v in failedA.items()),
-          f"环没记 failed: {failedA}")
-    # 禁用传导：禁用 dep_a → 依赖它的 dep_b/dep_e 也加载失败
-    mgrA.set_disabled("dep_a", True)
-    loadedB = [c.name for c in mgrA.ctxs]
-    check("dep_a" not in loadedB and "dep_b" not in loadedB
-          and "dep_e" not in loadedB,
-          f"禁用传导失败: {loadedB}")
-    mgrA.set_disabled("dep_a", False)
+
+    def write_mod_in(dirpath, name, main_src, json_extra=""):
+        d = Path(dirpath) / name
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "mod.json").write_text(
+            '{"name": "%s", "version": "1.0", "description": "t"%s}\n'
+            % (name, (", " + json_extra) if json_extra else ""),
+            encoding="utf-8")
+        (d / "main.py").write_text(main_src, encoding="utf-8")
+
+    dep_dir = Path(tempfile.mkdtemp(prefix="slm_dep_"))
+    # 版本不满足 → raise
+    dv = dep_dir / "ver"
+    write_mod_in(dv, "dep_a", "def on_load(ctx): pass")
+    write_mod_in(dv, "dep_c", "def on_load(ctx): pass",
+                 '"dependencies": {"dep_a": ">=2.0"}')
+    expect_raise(lambda: ModManager(None, dv).load_all(),
+                 "不满足", "版本门禁")
+    # 缺依赖 → raise
+    dm = dep_dir / "missing"
+    write_mod_in(dm, "dep_d", "def on_load(ctx): pass",
+                 '"dependencies": {"ghost_mod": ""}')
+    expect_raise(lambda: ModManager(None, dm).load_all(),
+                 "缺少依赖", "缺依赖")
+    # 依赖环 → raise
+    dc = dep_dir / "cycle"
+    write_mod_in(dc, "dep_f", "def on_load(ctx): pass",
+                 '"dependencies": {"dep_g": ""}')
+    write_mod_in(dc, "dep_g", "def on_load(ctx): pass",
+                 '"dependencies": {"dep_f": ""}')
+    expect_raise(lambda: ModManager(None, dc).load_all(),
+                 "依赖环", "依赖环")
+    # 禁用传导：禁用 dep_a → 依赖它的 dep_b/dep_e 重载时 raise
+    expect_raise(lambda: mgrA.set_disabled("dep_a", True),
+                 "缺少依赖", "禁用传导")
+    mgrA.set_disabled("dep_a", False)   # 恢复（load_all 正常）
     # 版本比较单元
     from stellarloom.mod import _ver_match
     check(_ver_match("1.0", ">=1.0") and _ver_match("1.2", ">1.0")
@@ -401,8 +453,9 @@ class CraftProbe:
     check(r == "ok", f"卸载后未还原: {r}")
     r = g11.sim.remove_building(6, 6)
     check(r is not (False, "no"), "卸载后 Overwrite 未还原")
-    # 坏注入目标 → 该 mod 失败隔离
-    write_mod("badmixin", '''
+    # 坏注入目标 → M15d 直接 raise（独立目录）
+    badmx_dir = Path(tempfile.mkdtemp(prefix="slm_badmx_"))
+    write_mod_in(badmx_dir, "badmixin", '''
 from stellarloom.api import Mixin, Inject
 @Mixin("no.such.Class")
 class BadMC:
@@ -410,10 +463,8 @@ class BadMC:
     def x(self, cir):
         pass
 ''')
-    mgr11b = ModManager(g11, base).load_all()
-    check(any(f == "badmixin" for f, _ in mgr11b.failed),
-          "坏 mixin 目标没判失败")
-    mgr11b.unload()
+    expect_raise(lambda: ModManager(g11, badmx_dir).load_all(),
+                 "no.such", "坏 mixin 目标")
     g11.mod_mgr.unload()
     print("  @Mixin/@Inject(HEAD/RETURN)/@Overwrite/自动收集/类对象target/卸载还原/失败隔离 ✓")
 

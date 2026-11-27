@@ -16,12 +16,17 @@ class PreprocError(Exception):
 
 
 class Preprocessor:
-    def __init__(self, root, defines=None, overrides=None):
+    def __init__(self, root, defines=None, overrides=None, source=None):
         """
-        overrides: {绝对路径: 替换后的文本}。用于 const 形式的选项改写——
-        不能改用户磁盘上的包，只在内存里替换，换包/还原丢缓存即可。
+        overrides: {canonical 路径: 替换后的文本}。用于 const 形式的选项
+        改写——不能改用户磁盘上的包，只在内存里替换，换包/还原丢缓存即可。
+        source: packscan.DirSource/ZipSource；给了它 root 仅用于报错展示，
+        所有读文件走 source（目录/zip 统一）。
         """
-        self.root = os.path.abspath(root)
+        self.source = source
+        # 有 source（目录/zip 统一抽象）时 root 只是逻辑前缀，
+        # 不做 abspath——zip 的 "shaders" 相对键会被 abspath 成磁盘路径。
+        self.root = root if source is not None else os.path.abspath(root)
         self.initial_defines = dict(defines or {})
         self.overrides = dict(overrides or {})
         self.stack = []
@@ -35,12 +40,17 @@ class Preprocessor:
         p = inc.strip()
         if p.startswith("/"):
             p = p[1:]
+        if self.source is not None:
+            return self.source.canonical(p)
         return os.path.normpath(os.path.join(self.root, p))
 
     def read_tree(self, path, depth=0):
         """递归取回 entry 文件 + 所有 include 的**原始文本树**（不展开）。"""
         self.stats["maxdepth"] = max(self.stats["maxdepth"], depth)
-        ap = os.path.abspath(path)
+        if self.source is not None:
+            ap = self.source.canonical(path)
+        else:
+            ap = os.path.abspath(path)
         if depth > 32:
             raise PreprocError("include 嵌套过深（>32）: %s" % path)
         if ap in self.stack:
@@ -50,11 +60,19 @@ class Preprocessor:
         # 内存覆盖优先（const 选项改写走这条路）
         text = self.overrides.get(ap)
         if text is None:
-            if not os.path.isfile(ap):
-                self.missing.append(ap)
-                raise PreprocError("找不到文件: %s" % ap)
-            self.stats["files"] += 1
-            text = open(ap, "r", encoding="utf-8", errors="replace").read()
+            if self.source is not None:
+                if not self.source.exists(ap):
+                    self.missing.append(ap)
+                    raise PreprocError("找不到文件: %s" % ap)
+                self.stats["files"] += 1
+                text = self.source.read(ap)
+            else:
+                if not os.path.isfile(ap):
+                    self.missing.append(ap)
+                    raise PreprocError("找不到文件: %s" % ap)
+                self.stats["files"] += 1
+                text = open(ap, "r", encoding="utf-8",
+                            errors="replace").read()
         self.stack.append(ap)
         out = []
         for line in text.splitlines():

@@ -44,3 +44,6 @@ desktop.ini
 
 # 本地临时脚本
 _tmp_*.py
+
+# 光影包（用户自备，体积/授权原因不进仓库）
+shaderpacks/

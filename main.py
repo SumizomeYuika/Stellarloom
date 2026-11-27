@@ -43,6 +43,10 @@ def create_screen():
 
 if __name__ == "__main__":
     import argparse
+    # M15d：未捕获异常按 Java 风格栈打印（模块.类.方法:行号，不显示文件路径）
+    from stellarloom.core.errfmt import install_excepthook
+    install_excepthook()
+
     ap = argparse.ArgumentParser(description="星织 StellarLoom-PG")
     ap.add_argument("--join", default=None, metavar="HOST[:PORT]",
                     help="联机：加入专用服务端（默认端口 27715）")

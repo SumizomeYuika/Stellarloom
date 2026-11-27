@@ -21,7 +21,7 @@ import numpy as np
 
 from .. import config as C
 
-SAVE_VERSION = 13
+SAVE_VERSION = 14   # v14（M15d）：players 表（按玩家分背包/手搓）
 MAGIC = b"SLM1"
 SAVE_SLOT_COUNT = 6  # 多存档（M6.20）：固定 6 个手动槽位
 
@@ -128,6 +128,16 @@ class SaveManager:
                 "inventory": {_name(k): v for k, v in game.inventory.items()},
             },
         }
+
+        # v14（M15d）：按玩家分背包。单机只有 players[0]；联机服务端有多个。
+        # stats.inventory 保留（= 当前玩家背包，slot_meta/老工具兼容）。
+        players = getattr(game, "players", None)
+        if players:
+            data["players"] = {
+                str(pid): {"inventory": {_name(k): v
+                                         for k, v in ps.inventory.items()}}
+                for pid, ps in sorted(players.items())
+            }
 
         # 兼容没有 worlds 的对象（旧 FakeGame / 测试桩）：平铺字段 = 单行星
         worlds = getattr(game, "worlds", None)
@@ -525,6 +535,18 @@ class SaveManager:
         game.inventory.clear()
         game.inventory.update(items)
 
+        # v14（M15d）：按玩家背包表。老档（迁移后）只有 players["0"] =
+        # 旧 stats.inventory；单机档恒只有一个玩家。就地更新背包引用，
+        # 保证 PlayerState.craft 绑定的字典不失联。
+        pdata = data.get("players")
+        if pdata and hasattr(game, "ensure_player"):
+            for pid_s, pd in pdata.items():
+                ps = game.ensure_player(int(pid_s))
+                pitems = {_load_key(k): v
+                          for k, v in (pd.get("inventory") or {}).items()}
+                ps.inventory.clear()
+                ps.inventory.update(pitems)
+
         # 激活存档记录的行星（真实 Game 才需要；顺带把 dyson.grid 指过去）
         if hasattr(game, "_activate_world"):
             game._activate_world(data.get("world_index", 0))
@@ -736,6 +758,15 @@ class SaveManager:
             for wd in data.get("worlds", []):
                 wd.setdefault("pipe_fluid", [])
             data["version"] = 13
+            v = 13
+        if v == 13:
+            # v13 -> v14（M15d）：按玩家分背包。老档只有一个共享背包，
+            # 整个装进 players["0"]（本地/单人玩家），行为与旧档一致。
+            stats = data.setdefault("stats", {})
+            inv = stats.get("inventory")
+            data.setdefault("players", {
+                "0": {"inventory": inv if isinstance(inv, dict) else {}}})
+            data["version"] = 14
             return data
         raise ValueError(f"存档版本 {v} 太旧或不支持（当前 {SAVE_VERSION}）")
 

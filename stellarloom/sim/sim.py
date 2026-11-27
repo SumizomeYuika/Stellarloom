@@ -25,6 +25,20 @@ from ..world.planets import PLANETS
 from .craft_queue import CraftQueue
 
 
+class PlayerState:
+    """一个玩家的私有状态（M15d）：独立背包 + 独立手搓队列。
+
+    世界（网格/科技/戴森球）是 sim 级共享的；只有背包/手搓按玩家分。
+    players[0] 是本地/单人玩家，联机玩家从 1 开始编号。
+    """
+
+    def __init__(self, inventory: dict[int, int] | None = None):
+        self.inventory: dict[int, int] = (
+            dict(C.STARTING_ITEMS) if inventory is None else inventory)
+        # 手搓队列绑定的是**这个玩家的**背包（材料排队即扣）
+        self.craft = CraftQueue(self.inventory)
+
+
 class Simulation:
     """可运行的游戏内核。不 import pygame，可 headless 推进。"""
 
@@ -32,11 +46,11 @@ class Simulation:
         self.tech = TechTree()
         self.dyson = DysonNetwork(None)
         self.dyson.bind(self.tech)
-        self.inventory: dict[int, int] = dict(C.STARTING_ITEMS)
+        # M15d：按玩家分背包/手搓队列；世界与科技保持共享。
+        # players[0] = 本地/单人玩家；联机玩家由 NetServer 按连接分配 1,2,3…
+        self.players: dict[int, PlayerState] = {0: PlayerState()}
+        self.player_index = 0
         self.saves = SaveManager()
-
-        # 手搓队列（材料排队时即扣，产出按配方时长推进）
-        self.craft = CraftQueue(self.inventory)
 
         # 世界集合：生成全部可殖民行星
         self.worlds: list[WorldState] = []
@@ -55,6 +69,44 @@ class Simulation:
         # M15a：旁路订阅者（联机服务端要和本地渲染同时拿到事件/脏格）
         self._event_sinks: list = []
         self._dirty_sinks: list = []
+
+    # ---------- 玩家（M15d：按玩家分背包，共享地图/科技/戴森球） ----------
+
+    @property
+    def inventory(self) -> dict[int, int]:
+        """**当前玩家**的背包（players[player_index]）。
+        返回的是活引用，clear()/update() 原地改与存档读档的原地语义兼容。"""
+        return self.players[self.player_index].inventory
+
+    @property
+    def craft(self) -> CraftQueue:
+        """**当前玩家**的手搓队列。"""
+        return self.players[self.player_index].craft
+
+    def ensure_player(self, pid: int) -> PlayerState:
+        """取玩家状态，不存在就新建（开局物资与单人一致）。"""
+        ps = self.players.get(pid)
+        if ps is None:
+            ps = self.players[pid] = PlayerState()
+        return ps
+
+    @contextlib.contextmanager
+    def with_player(self, pid: int):
+        """临时切到玩家 pid 执行一条指令，退出时还原（仿 with_world）。
+
+        联机服务端执行某个客户端的指令时，背包/手搓/容器取放都必须落在
+        那个玩家身上；串行 tick 内进出还原，不污染其它玩家。
+        """
+        if pid == self.player_index:
+            yield self
+            return
+        self.ensure_player(pid)
+        prev = self.player_index
+        self.player_index = pid
+        try:
+            yield self
+        finally:
+            self.player_index = prev
 
     # ---------- 世界 ----------
 
@@ -212,14 +264,16 @@ class Simulation:
         # M5b：恒星级舰队——所有行星的发射台都可能发船，舰队长在 sim 级
         self.fleet.update(dt, self.worlds)
 
-        # 手搓队列：面板关掉也照跑（材料已扣，这里只推进计时和产出）
-        prev_job = self.craft.job
-        self.craft.update(dt)
-        if prev_job is not None and self.craft.job is None:
-            r = C.RECIPES.get(prev_job.rid)
-            if r is not None:
-                nm = " + ".join(C.ITEM_NAMES.get(i, "?") for i in r[1])
-                self.emit("toast", f"手搓完成：{nm}", 1.8)
+        # 手搓队列：面板关掉也照跑（材料已扣，这里只推进计时和产出）。
+        # M15d：每个玩家的队列独立推进（单机只有 players[0]，行为不变）。
+        for ps in self.players.values():
+            prev_job = ps.craft.job
+            ps.craft.update(dt)
+            if prev_job is not None and ps.craft.job is None:
+                r = C.RECIPES.get(prev_job.rid)
+                if r is not None:
+                    nm = " + ".join(C.ITEM_NAMES.get(i, "?") for i in r[1])
+                    self.emit("toast", f"手搓完成：{nm}", 1.8)
 
         # 研究完成（含队列自动接续完成的）
         for tid in sorted(self.tech.researched - prev_researched):

@@ -46,14 +46,34 @@ def patch_source_for_options(text, info, values):
     return text, changed
 
 
-def const_option_files(shaders_dir, info):
-    """找出声明了 const 形式选项的文件（只需扫这些，不用扫全包）。"""
+def const_option_files(shaders_dir, info, source=None):
+    """找出声明了 const 形式选项的文件（只需扫这些，不用扫全包）。
+
+    source: packscan.DirSource/ZipSource（zip 直读时必传）；
+    不传时维持旧行为（os.walk 扫 shaders_dir）。
+    返回 {选项名: canonical 路径}。"""
     names = [n for n, s in info.options.items() if s.source == "const"]
     if not names:
         return {}
     # 逐个名字建正则，找第一个命中的文件
     found = {}
     pats = {n: const_value_re(n) for n in names}
+    if source is not None:
+        for rel, key in source.walk_files():
+            if not rel.endswith(".glsl"):
+                continue
+            try:
+                text = source.read_canonical(key)
+            except Exception:
+                continue
+            for n, pat in pats.items():
+                if n in found:
+                    continue
+                if pat.search(text):
+                    found[n] = key
+            if len(found) == len(pats):
+                return found
+        return found
     for dirpath, dirnames, files in os.walk(shaders_dir):
         dirnames[:] = [d for d in dirnames if not d.startswith(".")]
         for fn in files:

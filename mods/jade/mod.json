@@ -1,5 +1,6 @@
 {
   "name": "jade",
   "version": "1.0",
-  "description": "仿 Minecraft Jade（WAILA）：屏幕顶部中央显示鼠标指向的建筑/矿脉/物流状态信息"
+  "description": "仿 Minecraft Jade（WAILA）：屏幕顶部中央显示鼠标指向的建筑/矿脉/物流状态信息",
+  "env": "client"
 }

@@ -1,5 +1,6 @@
 {
   "name": "crash_guard",
   "version": "1.0",
-  "description": "Forge 风格崩溃守卫：游戏崩溃时弹出详细错误页并保存 crash-reports 崩溃报告"
+  "description": "Forge 风格崩溃守卫：游戏崩溃时弹出详细错误页并保存 crash-reports 崩溃报告",
+  "env": "client"
 }

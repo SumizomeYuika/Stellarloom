@@ -70,7 +70,8 @@ class BufferPool:
         self.tex = {}            # name -> _Tex
         self.fbos = {}           # 组合键 -> fbo id
         self.notes = []
-        self._all_fbo = 0        # 默认帧缓冲（屏幕）
+        self._screen_fbo = 0     # "屏幕"FBO：final/兜底画到这里，读回也读它
+        self._screen_tex = 0
 
     # ------------------------------------------------------------ 尺寸
     def resize(self, w, h):
@@ -127,7 +128,18 @@ class BufferPool:
 
     # ------------------------------------------------------------ FBO
     def _fbo_for(self, colors, depth):
-        key = (tuple(sorted(colors)), depth)
+        """按"gl_FragData[n] / gl_FragColor 写到 DRAWBUFFERS 第 n 项"建 FBO。
+
+        OptiFine 惯例：`/* DRAWBUFFERS:45 */` 表示本 pass 的输出 0 写
+        colortex4、输出 1 写 colortex5；源码里 gl_FragData[0] /
+        layout(location=0) out 都是**输出序号**，不是 colortex 编号。
+        GL 的语义也一样：fragment 输出序号索引的是 glDrawBuffers 数组。
+        所以附件仍按"colortex 下标 = 附件下标"挂，但 drawbuffer 数组
+        按 DRAWBUFFERS 顺序做**紧凑映射**：bufs[k] = 附件(colortex_k)。
+        gl_FragColor 等价于输出 0 → 也落第一项。
+        """
+        idxs = [int(c.replace("colortex", "")) for c in colors]
+        key = (tuple(sorted(idxs)), depth)
         fbo = self.fbos.get(key)
         if fbo is not None:
             return fbo
@@ -136,26 +148,26 @@ class BufferPool:
         api.glGenFramebuffers(1, glapi.byref(fid))
         fbo = fid.value
         api.glBindFramebuffer(glapi.GL_FRAMEBUFFER, fbo)
-        slots = []
-        for i, nm in enumerate(colors):
-            t = self.get(nm)
-            api.glFramebufferTexture2D(
-                glapi.GL_FRAMEBUFFER, glapi.GL_COLOR_ATTACHMENT0 + i,
-                glapi.GL_TEXTURE_2D, t.tex, 0)
-            slots.append(glapi.GL_COLOR_ATTACHMENT0 + i)
+        if not idxs:
+            # 纯深度 FBO：桌面 GL 要求 draw/read buffer 都显式给 NONE
+            api.glDrawBuffers(0, None)
+            api.glReadBuffer(glapi.GL_NONE)
+        else:
+            bufs = []
+            for i in idxs:
+                t = self.get("colortex%d" % i)
+                attach = glapi.GL_COLOR_ATTACHMENT0 + i
+                api.glFramebufferTexture2D(
+                    glapi.GL_FRAMEBUFFER, attach,
+                    glapi.GL_TEXTURE_2D, t.tex, 0)
+                bufs.append(attach)
+            arr = (glapi.c_uint * len(bufs))(*bufs)
+            api.glDrawBuffers(len(bufs), arr)
         if depth:
             t = self.get(depth)
             api.glFramebufferTexture2D(
                 glapi.GL_FRAMEBUFFER, glapi.GL_DEPTH_ATTACHMENT,
                 glapi.GL_TEXTURE_2D, t.tex, 0)
-        if not slots:
-            api.glDrawBuffers(0, None)
-        elif len(slots) == 1:
-            arr = (glapi.c_uint * 1)(slots[0])
-            api.glDrawBuffers(1, arr)
-        else:
-            arr = (glapi.c_uint * len(slots))(*slots)
-            api.glDrawBuffers(len(slots), arr)
         status = api.glCheckFramebufferStatus(glapi.GL_FRAMEBUFFER)
         api.glBindFramebuffer(glapi.GL_FRAMEBUFFER, 0)
         if status != glapi.GL_FRAMEBUFFER_COMPLETE:
@@ -163,6 +175,23 @@ class BufferPool:
                               % (status, colors, depth))
         self.fbos[key] = fbo
         return fbo
+
+    def clear_depth(self, name="depthtex0"):
+        """把深度纹理清成 1.0。每帧几何 pass 前必须调一次。
+
+        为什么必须显式清：深度纹理 glTexImage2D(None) 的初始内容是
+        **未定义**（Intel 驱动上是全 0），而几何 pass 用 GL_LESS 测试，
+        全 0 的深度会让所有片元直接被丢弃——这就是"世界层全黑"的
+        根因之一。颜色附件由包里各 pass 自己 clear，深度归我们管。
+        """
+        fbo = self._fbo_for([], name)
+        api = self.api
+        api.glBindFramebuffer(glapi.GL_FRAMEBUFFER, fbo)
+        api.glViewport(0, 0, self.w, self.h)
+        api.glDepthMask(glapi.GL_TRUE)
+        api.glClearDepthf(1.0)
+        api.glClear(glapi.GL_DEPTH_BUFFER_BIT)
+        api.glBindFramebuffer(glapi.GL_FRAMEBUFFER, 0)
 
     def bind_targets(self, slots, depth=None, clear=False, clear_color=None):
         """把一组 colortex 下标 + depth 绑成当前 FBO。
@@ -191,7 +220,44 @@ class BufferPool:
         api.glClear(glapi.GL_COLOR_BUFFER_BIT | glapi.GL_DEPTH_BUFFER_BIT)
 
     def bind_screen(self):
-        self.api.glBindFramebuffer(glapi.GL_FRAMEBUFFER, 0)
+        """绑"屏幕"FBO 并返回它。
+
+        桌面 WGL 的默认帧缓冲（FBO 0）属于那个 16x16 的隐藏宿主窗口，
+        往上面画全屏四边形只会出 1 个像素。所以 final / 兜底上屏 /
+        读回一律走这张**全分辨率 RGBA8 屏幕 FBO**。
+        """
+        fbo = self._ensure_screen()
+        self.api.glBindFramebuffer(glapi.GL_FRAMEBUFFER, fbo)
+        return fbo
+
+    def _ensure_screen(self):
+        if self._screen_fbo:
+            return self._screen_fbo
+        api = self.api
+        tid = glapi.c_uint(0)
+        api.glGenTextures(1, glapi.byref(tid))
+        self._screen_tex = tid.value
+        api.glBindTexture(glapi.GL_TEXTURE_2D, self._screen_tex)
+        api.glTexImage2D(glapi.GL_TEXTURE_2D, 0, glapi.GL_RGBA8,
+                         self.w, self.h, 0,
+                         glapi.GL_RGBA, glapi.GL_UNSIGNED_BYTE, None)
+        api.glTexParameteri(glapi.GL_TEXTURE_2D, glapi.GL_TEXTURE_MIN_FILTER,
+                            glapi.GL_NEAREST)
+        api.glTexParameteri(glapi.GL_TEXTURE_2D, glapi.GL_TEXTURE_MAG_FILTER,
+                            glapi.GL_NEAREST)
+        api.glBindTexture(glapi.GL_TEXTURE_2D, 0)
+        fid = glapi.c_uint(0)
+        api.glGenFramebuffers(1, glapi.byref(fid))
+        self._screen_fbo = fid.value
+        api.glBindFramebuffer(glapi.GL_FRAMEBUFFER, self._screen_fbo)
+        api.glFramebufferTexture2D(
+            glapi.GL_FRAMEBUFFER, glapi.GL_COLOR_ATTACHMENT0,
+            glapi.GL_TEXTURE_2D, self._screen_tex, 0)
+        status = api.glCheckFramebufferStatus(glapi.GL_FRAMEBUFFER)
+        api.glBindFramebuffer(glapi.GL_FRAMEBUFFER, 0)
+        if status != glapi.GL_FRAMEBUFFER_COMPLETE:
+            raise BufferError("屏幕 FBO 不完整 0x%04X" % status)
+        return self._screen_fbo
 
     def clear_first_use(self, names):
         """首帧把非持久缓冲清成黑色。
@@ -215,7 +281,7 @@ class BufferPool:
         """第一帧前把所有已存在缓冲清黑。逐缓冲绑 FBO 清，只做一次。"""
         api = self.api
         for nm, t in list(self.tex.items()):
-            if nm in PERSISTENT:
+            if nm in PERSISTENT or t.is_depth:
                 continue
             try:
                 fbo = self._fbo_for([nm], None)
@@ -243,6 +309,14 @@ class BufferPool:
         for f in self.fbos.values():
             api.glDeleteFramebuffers(1, glapi.byref(glapi.c_uint(f)))
         self.fbos.clear()
+        if self._screen_fbo:
+            api.glDeleteFramebuffers(
+                1, glapi.byref(glapi.c_uint(self._screen_fbo)))
+            self._screen_fbo = 0
+        if self._screen_tex:
+            api.glDeleteTextures(
+                1, glapi.byref(glapi.c_uint(self._screen_tex)))
+            self._screen_tex = 0
         self.notes.append("缓冲池已释放")
 
 

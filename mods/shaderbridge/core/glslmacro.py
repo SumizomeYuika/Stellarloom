@@ -9,7 +9,9 @@
 import re
 
 TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-NUM_RE = re.compile(r"[-+]?(?:0[xX][0-9a-fA-F]+|\d+\.\d*(?:[eE][-+]?\d+)?|\d*\.\d+(?:[eE][-+]?\d+)?|\d+)")
+NUM_RE = re.compile(
+    r"[-+]?(?:0[xX][0-9a-fA-F]+|\d+\.\d*(?:[eE][-+]?\d+)?|"
+    r"\d*\.\d+(?:[eE][-+]?\d+)?|\d+)[uU]?")
 
 
 class CondError(Exception):
@@ -314,6 +316,10 @@ def expand_object_macros(src, defs, rounds=6):
             safe[k] = v                      # VARYING -> in / out
         elif v.startswith("(") and v.endswith(")"):
             safe[k] = v                      # CUTOUT_REF -> (clamp(...))
+        elif re.fullmatch(r"[A-Za-z_]\w*\s*\(.*\)", v, re.S):
+            # 构造函数调用式宏值：WHITE -> vec3(1.0, 1.0, 1.0)、
+            # UI2 -> uvec2(UI0, UI1)。整体是表达式，内联不破坏优先级。
+            safe[k] = v
         elif re.fullmatch(r"[-+*/.\s0-9eExXa-fA-F]+", v):
             safe[k] = "(" + v + ")"
     simple = safe

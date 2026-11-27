@@ -215,11 +215,12 @@ def main() -> int:
     loader2 = base / "ldr2"
     loader2.mkdir()
     (loader2 / "tampered.slmmod").write_bytes(PK.MAGIC + b2.getvalue())
-    mgr3 = load_mods(g, loader2)
-    check(any("包加载失败" in m for _, m in mgr3.failed),
-          f"篡改包没被拒: {mgr3.failed}")
-    check("packdemo" not in
-          [c.name for c in mgr3.ctxs], "篡改包竟然加载了")
+    # M15d：篡改包 = pack 校验失败 → 加载直接 raise（不再记 failed）
+    try:
+        load_mods(g, loader2)
+        check(False, "篡改包没被拒（M15d 要求 raise）")
+    except Exception as e:
+        check(True, f"篡改包 raise ✓ ({type(e).__name__})")
 
     # ---------- [5] 路径穿越 / API 版本 ----------
     print("[5] 路径穿越 / API 拒绝:")
@@ -239,9 +240,12 @@ def main() -> int:
         ld = base / f"ldr_{fname}"
         ld.mkdir()
         (ld / fname).write_bytes(PK.MAGIC + bb.getvalue())
-        m4 = load_mods(g, ld)
-        check(any(fname in n for n, _ in m4.failed),
-              f"{fname} 没进 failed: {m4.failed}")
+        # M15d：路径穿越 / API 版本不符 → 直接 raise
+        try:
+            load_mods(g, ld)
+            check(False, f"{fname} 没抛异常（M15d 要求 raise）")
+        except Exception:
+            check(True, f"{fname} raise ✓")
         check(not any(Path(p).name == "evil.txt"
                       for p in Path(base).rglob("evil.txt")),
               "路径穿越落地了？!")
@@ -256,9 +260,8 @@ def main() -> int:
     (loader3 / "packdemo" / "main.py").write_text("MARK='dir'\n",
                                                   encoding="utf-8")
     shutil.copy2(pack_path, loader3 / "packdemo.slmmod")
-    mgr5 = load_mods(g, loader3)
-    check(any("同名目录" in m for _, m in mgr5.failed),
-          f"包被忽略的说明没进 failed: {mgr5.failed}")
+    mgr5 = load_mods(g, loader3)   # 同名包被静默忽略（M15d：这不是错误）
+    check(mgr5.failed == [], "failed 应恒为空")
     pd5 = next((c for c in mgr5.ctxs if c.name == "packdemo"), None)
     pd5_main = sys.modules.get(f"mod_{pd5.name}_main") if pd5 else None
     check(getattr(pd5_main, "MARK", None) == "dir",

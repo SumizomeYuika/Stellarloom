@@ -26,6 +26,7 @@ from __future__ import annotations
 import sys
 import time
 import traceback
+import os
 from pathlib import Path
 
 import pygame
@@ -34,6 +35,20 @@ try:
     from stellarloom import config as C
 except Exception:                    # 极端情况下游戏 config 都不可用
     C = None
+
+
+def _fmt_stack(exc) -> str:
+    """Java 风格堆栈（M15d）：`at stellarloom.模块.类.方法:行号`，不显示路径。
+
+    游戏本体自带实现（stellarloom.core.errfmt），这里只是薄封装——
+    万一 errfmt 不可用（极端加载顺序）就退回标准 traceback。
+    """
+    try:
+        from stellarloom.core.errfmt import format_exc
+        return format_exc(exc)
+    except Exception:
+        return "".join(traceback.format_exception(
+            type(exc), exc, exc.__traceback__))
 
 _CFG: dict = {}                      # on_load 注入：ctx.cfg 合并配置
 _GAME = None                         # on_load 注入：游戏实例（钩子用）
@@ -114,9 +129,9 @@ def _save_report(exc, tb, game) -> Path:
         "",
         f"异常: {type(exc).__name__}: {exc}",
         "",
-        "---- 详细堆栈 ----",
-        "".join(traceback.format_exception(type(exc), exc, tb)),
-        "---- 模组 ----",
+        "---- Traceback ----",
+        _fmt_stack(exc),
+        "---- Mods ----",
         _mod_list(game),
         "=" * 66,
     ]
@@ -151,25 +166,25 @@ def _wrap(text: str, font, width: int) -> list:
 
 
 def _trace_rows(exc, tb, font, width) -> list:
-    """完整堆栈 → [(行文本, 颜色)]，已折行；末行（异常）标红色。"""
-    text = "".join(traceback.format_exception(type(exc), exc, tb))
+    """完整堆栈 → [(行文本, 颜色)]，已折行；异常行标红色。
+
+    M15d：堆栈行改成 Java 风格 `at 模块.类.方法:行号`，不显示文件路径。
+    """
     rows: list[tuple[str, tuple]] = []
-    raw = text.split("\n")
-    for i, ln in enumerate(raw):
-        if ln.startswith("  File "):
+    for ln in _fmt_stack(exc).split("\n"):
+        if not ln:
+            continue
+        if ln.startswith("    at "):
             col = _FILE
-        elif ln.startswith(("  ", "\t")):
-            col = _SRC
-        elif ln.startswith("Traceback"):
+        elif ln.startswith("Caused by:"):
             col = _DIM
         else:
-            col = _TXT
+            col = _ERROR if ln is None else _TXT
         for piece in _wrap(ln, font, width):
             rows.append((piece, col))
-    if rows and rows[-1][0].strip() == "":   # 去掉末尾空行占位
-        rows.pop()
     if rows:
-        rows[-1] = (rows[-1][0], _ERROR)     # 异常行使一直是红色
+        # 第一行（异常类型+消息）总是红色
+        rows[0] = (rows[0][0], _ERROR)
     return rows
 
 
@@ -301,6 +316,11 @@ def _handle_crash(game, exc, tb):
     print(f"[mod crash_guard] 游戏崩溃已拦截：{type(exc).__name__}: {exc}")
     print(f"[mod crash_guard] 崩溃报告已保存：{report}")
     if game is None or not getattr(game, "screen", None):
+        return report
+    # M15d：出错即崩后崩溃拦截会更常被触发。headless/自检环境
+    # （SDL_VIDEODRIVER=dummy）没有真人按 ESC，崩溃页事件循环会永远阻塞
+    # ——只存报告 + 打控制台，不弹页。
+    if os.environ.get("SDL_VIDEODRIVER") == "dummy":
         return report
     try:
         if pygame.display.get_init():

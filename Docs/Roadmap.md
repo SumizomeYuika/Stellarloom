@@ -1042,6 +1042,27 @@ token；面板开着时快照到达会被强制关闭（防陈旧引用）。
 确定性双跑、**打包服务端子进程真实 socket 联机**、mod 加载与卸载干净、
 握手 mod 清单），全套 **33 项自检全绿**。
 
+## M15d 已完成（联机完善：@EnvType + 崩溃策略 + 按玩家分背包）
+
+1. **@EnvType 侧标**（`api.py`）：`@EnvType("client"/"server"/"both")` 可标 mixin
+   类、注入方法、on_load；`load_mods(side=)` 按侧过滤——服务端跳过 jade/
+   shaderbridge 这类纯 UI mod 与 gregtech 的 4 个 UI mixin（逻辑 mixin 保持
+   both 照常装）。服务端不再因 mixin 到 UI 类而炸。
+2. **mod 出错即崩**：加载器的失败隔离全部删除——mod.json 解析失败、main.py
+   语法错、on_load 抛异常、mixin 目标不存在、依赖不满足/环、包校验失败一律
+   raise，交给 crash_guard 写报告；`self.failed` 恒为空保留兼容。顺带修了两个
+   被暴露的真问题：crash_guard 崩溃页在 dummy 驱动下死循环卡死、同进程第二个
+   Game 加载 mod 撞全局注册表（_ACTIVE 单活跃管理器）。
+3. **按玩家分背包**（SAVE_VERSION 13→14）：`Simulation.players[pid]` =
+   独立 `inventory` + `CraftQueue`；`sim.inventory/craft` 变成当前玩家属性；
+   `with_player(pid)` 上下文（仿 with_world）；服务端按 session player_id 执行
+   指令，背包互不相干；科技/戴森球/世界保持共享。存档迁移：老档背包进
+   `players["0"]`。关键帧全量广播、客户端只读自己背包（协议零新消息）。
+4. **测试**：新增 `_envcheck` / `_modcrashcheck` / `_playerscheck`，
+   全套 **36 项自检全绿**。
+5. **已知边界**：事件/toast 全局广播（别人的"材料不够"你也会看到）——
+   后续可按 player_id 路由过滤。
+
 ## 下一步：M5c 候选（未启动）
 煤/油（TechDebt #1 的燃料部分）仍待还；星际侧可继续做：每台多船/运输船油耗/行星航线图。
 `_ensure_world(i)` 已能动态生成第 3+ 颗行星，暴露 UI 即可。

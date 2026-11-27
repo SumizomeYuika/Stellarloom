@@ -21,6 +21,7 @@
 import json
 import os
 import re
+import zipfile
 
 DEFINE_RE = re.compile(r"^\s*#\s*define\s+([A-Za-z_]\w*)\s*(.*)$")
 CONST_RE = re.compile(
@@ -59,7 +60,9 @@ class OptionSpec:
 class PackInfo:
     def __init__(self, root):
         self.root = root
-        self.name = os.path.basename(os.path.normpath(root))
+        base = os.path.basename(os.path.normpath(root))
+        self.name = base[:-4] if base.lower().endswith(".zip") else base
+        self.source = None       # DirSource / ZipSource
         self.screens = []        # [(id, 标题, [选项名])]
         self.sliders = set()
         self.options = {}        # name -> OptionSpec
@@ -85,7 +88,180 @@ class PackInfo:
         }
 
 
+# ---------------------------------------------------------------- 包源抽象
+# 目录包与 zip 包统一接口：所有"路径"都是 canonical key——
+# 目录 = os 绝对路径；zip = "shaders/program/x.glsl" 这样的 posix 相对键。
+# preproc / chain / setters 通过 source 读写，不直接碰 os。
+
+class DirSource:
+    """解压目录形式的光影包。shaders_dir 指向包的 shaders/ 目录。"""
+
+    is_zip = False
+
+    def __init__(self, shaders_dir):
+        self.shaders_dir = os.path.abspath(shaders_dir)
+
+    def canonical(self, rel):
+        if os.path.isabs(rel):
+            return os.path.normpath(rel)
+        return os.path.normpath(os.path.join(self.shaders_dir, rel))
+
+    def exists(self, rel):
+        return os.path.isfile(self.canonical(rel))
+
+    def isdir(self, rel):
+        return os.path.isdir(self.canonical(rel))
+
+    def read(self, rel):
+        return self.read_canonical(self.canonical(rel))
+
+    def read_canonical(self, key):
+        with open(key, "r", encoding="utf-8", errors="replace") as f:
+            return f.read()
+
+    def listdir(self, rel):
+        try:
+            return sorted(os.listdir(self.canonical(rel)))
+        except OSError:
+            return []
+
+    def walk_files(self):
+        """遍历 shaders/ 下全部文件。产出 (posix 相对键, canonical)。"""
+        for dirpath, dirnames, names in os.walk(self.shaders_dir):
+            dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+            for n in names:
+                ap = os.path.join(dirpath, n)
+                rel = os.path.relpath(ap, self.shaders_dir) \
+                    .replace(os.sep, "/")
+                yield rel, ap
+
+
+class ZipSource:
+    """zip 未解压光影包。zipfile 直读，不落盘。
+
+    zip 里可能有一层顶层目录包裹（foo/shaders/...），也可能直接是
+    shaders/ 在根。找到含 'shaders' 段的最短前缀当根。
+    """
+
+    is_zip = True
+
+    def __init__(self, zippath):
+        self.zf = zipfile.ZipFile(zippath)
+        names = [n for n in self.zf.namelist() if not n.endswith("/")]
+        self.names = set(names)
+        self.prefix = self._find_shaders_prefix(names)
+
+    @staticmethod
+    def _find_shaders_prefix(names):
+        best = None
+        for n in names:
+            parts = n.split("/")
+            for i, p in enumerate(parts[:-1]):
+                if p == "shaders":
+                    prefix = "/".join(parts[:i + 1]) + "/"
+                    if best is None or len(prefix) < len(best):
+                        best = prefix
+        return best
+
+    @property
+    def ok(self):
+        return self.prefix is not None
+
+    def canonical(self, rel):
+        rel = rel.replace("\\", "/")
+        while rel.startswith("/"):
+            rel = rel[1:]
+        # 已是 canonical 键（含 prefix）就直接返回，保证幂等
+        if self.prefix and (rel.startswith(self.prefix)
+                            or rel == self.prefix.rstrip("/")):
+            return rel
+        # posix 规范化（去掉 .. / .）
+        parts = []
+        for p in rel.split("/"):
+            if p in ("", "."):
+                continue
+            if p == "..":
+                if parts:
+                    parts.pop()
+                continue
+            parts.append(p)
+        # 根键统一不带尾随斜杠：canonical("") = "shaders"
+        return ((self.prefix or "") + "/".join(parts)).rstrip("/")
+
+    def exists(self, rel):
+        return self.canonical(rel) in self.names
+
+    def isdir(self, rel):
+        pfx = self.canonical(rel) + "/"
+        return any(n.startswith(pfx) for n in self.names)
+
+    def read(self, rel):
+        return self.read_canonical(self.canonical(rel))
+
+    def read_canonical(self, key):
+        data = self.zf.read(key)
+        return data.decode("utf-8", "replace")
+
+    def listdir(self, rel):
+        pfx = self.canonical(rel)
+        pfx_slash = pfx + "/"
+        out = set()
+        for n in self.names:
+            if not n.startswith(pfx_slash):
+                continue
+            rest = n[len(pfx_slash):]
+            out.add(rest.split("/", 1)[0])
+        return sorted(out)
+
+    def walk_files(self):
+        if not self.prefix:
+            return
+        for n in sorted(self.names):
+            if n.startswith(self.prefix):
+                yield n[len(self.prefix):], n
+
+    def close(self):
+        try:
+            self.zf.close()
+        except Exception:
+            pass
+
+
+def open_source(root):
+    """按路径形式建包源。zip（含 shaders/ 段）→ ZipSource；目录 → DirSource。
+    返回 (source, 是否找到 shaders/)。"""
+    if zipfile.is_zipfile(root):
+        src = ZipSource(root)
+        return src, src.ok
+    shaders = os.path.join(root, "shaders")
+    if os.path.isdir(shaders):
+        return DirSource(shaders), True
+    if os.path.basename(os.path.normpath(root)) == "shaders":
+        return DirSource(root), True
+    return DirSource(shaders), False
+
+
+def pack_has_shaders(path):
+    """目录或 zip 是否是光影包根。find_packs 的候选判定用。"""
+    if not os.path.exists(path):
+        return False
+    if os.path.isdir(path):
+        if os.path.isdir(os.path.join(path, "shaders")):
+            return True
+        return os.path.basename(os.path.normpath(path)) == "shaders"
+    if zipfile.is_zipfile(path):
+        try:
+            src = ZipSource(path)
+            ok = src.ok
+            src.close()
+            return ok
+        except Exception:
+            return False
+    return False
+
+
 # ---------------------------------------------------------------- properties
+
 
 def _parse_properties(text):
     """shaders.properties → dict。支持 #ifdef 之外的行（条件行原样记录忽略）。"""
@@ -122,22 +298,16 @@ def _split_tokens(s):
 
 def scan_pack(root):
     info = PackInfo(root)
-    shaders = os.path.join(root, "shaders")
-    if not os.path.isdir(shaders):
-        # 也允许直接把 shaders 目录当根
-        if os.path.basename(os.path.normpath(root)) == "shaders":
-            shaders = root
-            info.root = os.path.dirname(os.path.normpath(root))
-        else:
-            info.warnings.append("找不到 shaders/ 目录")
-            return info
+    source, found = open_source(root)
+    info.source = source
+    if not found:
+        info.warnings.append("找不到 shaders/ 目录（zip 里也没有）")
+        return info
     info.found = True
 
     props = {}
-    ptext_path = os.path.join(shaders, "shaders.properties")
-    if os.path.isfile(ptext_path):
-        props = _parse_properties(
-            open(ptext_path, "r", encoding="utf-8", errors="replace").read())
+    if source.exists("shaders.properties"):
+        props = _parse_properties(source.read("shaders.properties"))
     else:
         info.warnings.append("缺少 shaders.properties")
 
@@ -161,37 +331,33 @@ def scan_pack(root):
     for name in _split_tokens(props.get("sliders", "")):
         info.sliders.add(name)
 
-    _scan_constants(info, shaders)
-    _scan_lang(info, shaders)
-    _scan_programs(info, shaders)
+    _scan_constants(info, source)
+    _scan_lang(info, source)
+    _scan_programs(info, source)
     return info
 
 
-def _scan_constants(info, shaders):
+def _scan_constants(info, source):
     """从所有 .glsl 里收集 #define 与 const 声明的选项（带 // [档位] 的才算选项）。"""
     cand = {}
-    for dirpath, dirnames, names in os.walk(shaders):
-        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
-        for n in names:
-            if not n.endswith(".glsl"):
+    for rel, key in source.walk_files():
+        if not rel.endswith(".glsl"):
+            continue
+        try:
+            text = source.read_canonical(key)
+        except Exception:
+            continue
+        for line in text.splitlines():
+            m = DEFINE_RE.match(line)
+            if m:
+                nm, rest = m.group(1), m.group(2)
+                _record(cand, nm, rest, "define")
                 continue
-            path = os.path.join(dirpath, n)
-            try:
-                text = open(path, "r", encoding="utf-8",
-                            errors="replace").read()
-            except OSError:
-                continue
-            for line in text.splitlines():
-                m = DEFINE_RE.match(line)
-                if m:
-                    nm, rest = m.group(1), m.group(2)
-                    _record(cand, nm, rest, "define")
-                    continue
-                m = CONST_RE.match(line)
-                if m:
-                    typ, nm, val, tail = (m.group(1), m.group(2),
-                                          m.group(3), m.group(4))
-                    _record(cand, nm, val + tail, "const", typ)
+            m = CONST_RE.match(line)
+            if m:
+                typ, nm, val, tail = (m.group(1), m.group(2),
+                                      m.group(3), m.group(4))
+                _record(cand, nm, val + tail, "const", typ)
     # 只保留"有档位注释"或"在屏幕分组里出现"的项
     listed = set()
     for _, _, names in info.screens:
@@ -258,18 +424,14 @@ def _guess_kind(val):
     return "other"
 
 
-def _scan_lang(info, shaders):
+def _scan_lang(info, source):
     """读 lang/*.lang，挂上显示名、说明、档位短名。中文优先。"""
-    lang_dir = os.path.join(shaders, "lang")
-    if not os.path.isdir(lang_dir):
-        return
     files = {}
-    for n in os.listdir(lang_dir):
+    for n in source.listdir("lang"):
         if n.endswith(".lang"):
             try:
-                files[n] = open(os.path.join(lang_dir, n), "r",
-                                encoding="utf-8", errors="replace").read()
-            except OSError:
+                files[n] = source.read("lang/" + n)
+            except Exception:
                 pass
     prefer = []
     for pfx in ("zh_cn", "zh_CN", "en_us", "en_US"):
@@ -316,17 +478,14 @@ def _scan_lang(info, shaders):
                 spec.label = v
 
 
-def _scan_programs(info, shaders):
+def _scan_programs(info, source):
     """收集各 world 变体 + 根目录的 program 入口。"""
     dirs = [""]
-    for n in sorted(os.listdir(shaders)):
-        if n.startswith("world") and os.path.isdir(os.path.join(shaders, n)):
+    for n in source.listdir(""):
+        if n.startswith("world") and source.isdir(n):
             dirs.append(n)
     for d in dirs:
-        base = os.path.join(shaders, d) if d else shaders
-        if not os.path.isdir(base):
-            continue
-        for n in sorted(os.listdir(base)):
+        for n in source.listdir(d):
             if not (n.endswith(".vsh") or n.endswith(".fsh")):
                 continue
             stem = n.rsplit(".", 1)[0]

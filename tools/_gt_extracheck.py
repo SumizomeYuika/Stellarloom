@@ -106,8 +106,8 @@ def main() -> int:
     # =================================================================
     print("== A. 仅 gregtech_heavy ==")
     tmpA, mgrA = _single_config("gregtech_heavy")
-    mgrA.load_all()
-    check("A 加载成功", not mgrA.failed, str(mgrA.failed))
+    mgrA.load_all()   # M15d：出错即崩——能走到这就是"未抛异常"
+    check("A 加载成功（未抛异常）", mgrA.failed == [], str(mgrA.failed))
     import mod_gregtech_heavy_main as GT
     simA = mgrA.game.sim
     # M13.2：开局不再白送核心 → 测试产线必须自己供电
@@ -145,13 +145,14 @@ def main() -> int:
     # B. 依赖门禁 + 临时目录联装（重工 + 扩展，带用户配置覆盖）
     # =================================================================
     print("== B. 依赖声明 / 联装（临时目录） ==")
-    # B0. 只装扩展 → 干净失败（体现 M6.29 依赖系统）
+    # B0. 只装扩展 → M15d 缺依赖直接 raise（出错即崩，不再记 failed）
     tmpB0, mgrB0 = _single_config("gregtech_extra")
-    mgrB0.load_all()
-    dep_ok = any(fname == "gregtech_extra" and "缺少依赖" in err
-                 for fname, err in mgrB0.failed)
-    check("B 单独扩展无法加载（缺依赖 gregtech_heavy）", dep_ok,
-          str(mgrB0.failed))
+    dep_ok = False
+    try:
+        mgrB0.load_all()
+    except Exception as e:
+        dep_ok = "缺少依赖" in str(e) and "gregtech_heavy" in str(e)
+    check("B 单独扩展加载 raise（缺依赖 gregtech_heavy）", dep_ok)
     check("B 缺依赖时其它状态不受污染", not mgrB0.ctxs, str(mgrB0.ctxs))
     shutil.rmtree(tmpB0, ignore_errors=True)
 
@@ -163,7 +164,7 @@ def main() -> int:
               encoding="utf-8") as f:
         f.write('{"reactor_power": 99.0, "vein_counts": [60, 50, 40, 30, 20]}')
     mgrB.load_all()
-    check("B 联装加载成功", not mgrB.failed, str(mgrB.failed))
+    check("B 联装加载成功（未抛异常）", mgrB.failed == [], str(mgrB.failed))
     import mod_gregtech_extra_main as X
     check("B 配置合并：reactor_power 被用户覆盖", X.REACTOR_POWER == 99.0,
           str(X.REACTOR_POWER))
@@ -318,7 +319,7 @@ def main() -> int:
     print("== C. 重工 + 星海扩展 ==")
     gameC = FakeGame()
     mgrC = ModManager(gameC, MODS_DIR).load_all()
-    check("C 双 mod 加载成功", not mgrC.failed, str(mgrC.failed))
+    check("C 双 mod 加载成功（未抛异常）", mgrC.failed == [], str(mgrC.failed))
     namesC = [c.name for c in mgrC.ctxs]
     check("C mod 清单", "gregtech_extra" in namesC and "gregtech_heavy" in namesC,
           str(namesC))

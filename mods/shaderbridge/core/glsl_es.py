@@ -1,13 +1,19 @@
-"""GLSL 330 compatibility → GLSL ES 3.00 转译。
+"""GLSL 330 compatibility → 桌面 GLSL 3.30 core 转译。
+
+历史说明：本转译器原来输出 GLSL ES 3.00（`#version 300 es`）。
+现在 mod 只支持 Windows 桌面（PyOpenGL + 桌面 GL），默认 target 改为
+"desktop330"：输出版本行换成 `#version 330 core`，不再注入 ES 精度块，
+并剥掉源码里的 highp/mediump/lowp 限定词（桌面 GLSL 330 不认识）。
+旧的 "es300" 路径保留，只为 devtools 的对照测试用，不再走正式链。
 
 原则：**能转的转，不能转的明确标记降级，绝不静默产生错误代码**。
 
 处理内容：
-1. 版本行：#version 330 compatibility → #version 300 es，并注入 ES 默认精度
+1. 版本行：#version 330 compatibility → #version 330 core（桌面目标）
 2. 输入输出：varying/attribute → in/out；gl_FragData[n] → 具名 out
 3. 兼容内建：gl_ModelViewProjectionMatrix / ftransform() / texture2D /
    textureCube / texture3D / gl_Color / gl_TexCoord[]
-4. 精度：sampler 统一补 precision（ES 要求）
+4. 精度：桌面目标剥掉所有 highp/mediump/lowp；es300 目标补默认精度
 5. 不支持特性：双精度、几何着色、gl_TexCoord 特殊用法 → 标记
 """
 
@@ -106,15 +112,43 @@ def _convert_varying(src, stage):
     return "\n".join(out_lines), True
 
 
+def _remap_layout_locations(src, drawbuffers):
+    """把源码里显式的 `layout(location = k)` 重映射到全局 colortex 下标。
+
+    光影包惯例（春眠/cm 等）：`/* DRAWBUFFERS:45 */` 配合
+    `layout(location = 0) out ... // colortex4`——这里的 location 是
+    **DRAWBUFFERS 列表里的序号**，不是 colortex 编号。我们的 FBO 按
+    "附件下标 = colortex 下标"挂（buffers._fbo_for），所以必须在这里
+    把序号翻译成编号：location 0→4、1→5。
+    """
+    if not drawbuffers:
+        return src, 0
+    n = [0]
+
+    def sub(m):
+        k = int(m.group(1))
+        if 0 <= k < len(drawbuffers):
+            new = drawbuffers[k]
+            if new != k:
+                n[0] += 1
+                return "layout(location = %d) out" % new
+        return m.group(0)
+
+    out = re.sub(r"layout\s*\(\s*location\s*=\s*(\d+)\s*\)\s*out", sub, src)
+    return out, n[0]
+
+
 def _fragdata_to_out(src, drawbuffers):
     """决定输出槽声明。
 
     规则（避免 location 冲突）：
-    - 源里已经有 `layout(location = N) out` 声明 → 原样尊重，自己不再补
+    - 源里已有 `layout(location = N) out` → 先按 DRAWBUFFERS 序号→编号
+      重映射，再原样尊重，自己不再补
     - 用了 gl_FragData[n] → 按实际用到的下标补
     - 只有 DRAWBUFFERS → 按它补
     - 什么都没有 → 补一个 location 0 + gl_FragColor 别名
     """
+    src, nremap = _remap_layout_locations(src, drawbuffers)
     existing = set(int(m) for m in
                    re.findall(r"layout\s*\(\s*location\s*=\s*(\d+)\s*\)\s*out\b",
                               src))
@@ -367,18 +401,38 @@ def _scan_unsupported(src):
     return found
 
 
-def transpile(src, stage, drawbuffers=None):
-    """主入口。stage: 'VERTEX' / 'FRAGMENT'。"""
+# 精度限定词：桌面 GLSL 330 里根本没有这个概念，必须整体剥掉。
+# 限定词只可能出现在声明/参数位置，按"词边界 + 后跟空白"剥足够安全
+# （包里不会有人拿 highp 当变量名——那是 GLSL 保留字）。
+_PRECISION_WORD_RE = re.compile(r"\b(?:highp|mediump|lowp)\s+")
+
+
+def _strip_precision(src):
+    return _PRECISION_WORD_RE.sub("", src)
+
+
+def transpile(src, stage, drawbuffers=None, target="desktop330"):
+    """主入口。stage: 'VERTEX' / 'FRAGMENT'。
+    target: "desktop330"（默认，桌面 GL）/ "es300"（仅自检对照用）。"""
+    desktop = target != "es300"
     r = TranspileResult()
     r.stage = stage
 
     bad = _scan_unsupported(src)
     if bad:
+        # gl_FragDepth 在桌面 330 是核心特性，不算不支持
+        if desktop:
+            bad = [b for b in bad if not b.startswith("gl_FragDepth")]
         r.unsupported.extend(bad)
 
     body, _ver = _strip_version(src)
+    # 先剥精度，后面所有处理都在无精度限定的源码上做
+    if desktop:
+        body = _strip_precision(body)
 
-    decls = [_precision_block()]
+    decls = []
+    if not desktop:
+        decls.append(_precision_block())
     if stage == "VERTEX":
         decls.extend(_inject_vertex_inputs(body))
 
@@ -397,7 +451,8 @@ def transpile(src, stage, drawbuffers=None):
     if nfix:
         r.notes.append("补齐 vec/ivec 混算的显式转换 %d 处" % nfix)
 
-    body = _fix_sampler_precision(body)
+    if not desktop:
+        body = _fix_sampler_precision(body)
 
     # 注意：_inject_vertex_inputs 必须在 _compat_builtins **之后**调用，
     # 否则那时 slm_mvp 还没出现在正文里，会漏声明。
@@ -406,7 +461,12 @@ def transpile(src, stage, drawbuffers=None):
         if extra:
             decls.extend(extra)
 
-    header = "#version 300 es\n" + "\n".join(decls) + "\n"
+    if desktop:
+        header = "#version 330 core\n"
+        if decls:
+            header += "\n".join(decls) + "\n"
+    else:
+        header = "#version 300 es\n" + "\n".join(decls) + "\n"
     r.src = header + body
     if not r.src.endswith("\n"):
         r.src += "\n"

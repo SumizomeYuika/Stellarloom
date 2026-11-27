@@ -93,7 +93,8 @@ def main() -> int:
     names = [c.name for c in mgr.ctxs]
     print(f"  已加载 mod: {names}")
     check("gregtech_heavy 加载成功", "gregtech_heavy" in names)
-    check("无加载失败", not mgr.failed, f"failed={mgr.failed}")
+    # M15d：mod 出错即崩——能走到这行就说明"没抛异常"；failed 恒为空
+    check("加载未抛异常且 failed 为空", mgr.failed == [], f"failed={mgr.failed}")
     ctx = next((c for c in mgr.ctxs if c.name == "gregtech_heavy"), None)
     if ctx is None:
         print("FAIL 拿不到 mod ctx，终止")

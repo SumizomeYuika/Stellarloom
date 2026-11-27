@@ -9,14 +9,18 @@
 - 世界是环形卷绕的（星织 camera 用 % world_pw 卷绕），所以要把每格
   在 ±1 个世界宽高内重复三次，保证屏幕边缘不出现空洞。
 
-顶点布局**必须与转译器产出的属性名一致**（这是硬约束，改布局先改
-glsl_es.REQUIRED_DECLS 与 passes.FullscreenQuad.GEO_ATTRS）：
+顶点布局（20 float / 顶点，6 顶点 / 格）。compatibility profile 下
+内建属性走 **client-state 固定管线指针**（绘制时现场设置，见
+passes.FullscreenQuad.draw_geometry），VAO 里只保留唯一的 generic
+属性 mc_Entity（偏移 64，attrib 4，由 GEO_ATTRS 绑定）：
 
-  loc 0  slm_vertex  vec4  (x, y, z, 1)     世界坐标（相机相对）
-  loc 1  slm_uv0     vec4  (u, v, 0, 0)     格子内部 UV；.t 参与植物晃动判定
-  loc 2  slm_color   vec4  (r, g, b, a)     albedo * 顶点色
-  loc 3  slm_uv1     vec4  (u, v, 0, 1)     原始 lmcoord（经 slm_texmat1 变换）
-  loc 4  mc_Entity   vec4  (id, 0, 0, 0)    方块 id；给 -1 → 不命中任何植被族
+  字节 0   gl_Vertex          vec4  (x, y, z, 1)     世界坐标（相机相对）
+  字节 16  gl_MultiTexCoord0  vec4  (u, v, 0, 0)     格子内部 UV
+  字节 32  gl_Color           vec4  (r, g, b, a)     albedo * 顶点色
+  字节 48  gl_MultiTexCoord1  vec4  (u, v, 0, 1)     原始 lmcoord（经
+                                                     gl_TextureMatrix[1] 变换）
+  字节 64  mc_Entity          vec4  (id, 0, 0, 0)    方块 id；给 -1 →
+                                                     不命中任何植被族
 
 共 20 float / 顶点，6 顶点 / 格 → 一屏 4000 格约 480K float。
 mc_Entity 给 -1 是故意的：包里 WAVING_PLANTS 靠 isVegetationId(mc_Entity.x)
@@ -50,7 +54,13 @@ class WorldGeometry:
         self.capacity = 0        # 已分配的顶点数
         self.count = 0           # 当前有效顶点数
         self.cells = 0
+        self._dirty = True       # 世界变了要重烘（建筑增删 → 置 True）
+        self._last_key = None    # 上次烘焙的 (cam tile, zoom, size)
         self._setup()
+
+    def mark_dirty(self):
+        """外部钩子：世界内容变了（ChunkRenderer._build 被触发），下帧重烘。"""
+        self._dirty = True
 
     def _setup(self):
         api = self.api
@@ -64,17 +74,12 @@ class WorldGeometry:
         self.quad.geo_vbo = bid.value
         api.glBindBuffer(glapi.GL_ARRAY_BUFFER, self.vbo)
         stride = FLOATS_PER_VERT * 4
-        layout = [
-            (0, 4, 0),                      # slm_vertex  vec4
-            (1, 4, 4 * 4),                  # slm_uv0     vec4
-            (2, 4, 8 * 4),                  # slm_color   vec4
-            (3, 4, 12 * 4),                 # slm_uv1     vec4
-            (4, 4, 16 * 4),                 # mc_Entity   vec4
-        ]
-        for idx, size, off in layout:
-            api.glEnableVertexAttribArray(idx)
-            api.glVertexAttribPointer(idx, size, glapi.GL_FLOAT, glapi.GL_FALSE,
-                                      stride, ctypes.c_void_p(off))
+        # VAO 只持 mc_Entity（generic attrib 4，offset 64）；
+        # gl_Vertex/gl_Color/gl_MultiTexCoord0/1 是固定管线内建属性，
+        # 由 draw_geometry 里的 client-state 指针喂，不进 VAO。
+        api.glEnableVertexAttribArray(4)
+        api.glVertexAttribPointer(4, 4, glapi.GL_FLOAT, glapi.GL_FALSE,
+                                  stride, ctypes.c_void_p(16 * 4))
         api.glBindVertexArray(0)
 
     # ---------------------------------------------------------- 顶点生成
@@ -89,7 +94,19 @@ class WorldGeometry:
         import numpy as np
         from stellarloom import config as C
 
+        # 几何缓存：相机没挪、缩放没变、世界没脏 → 直接复用上次烘的 VBO。
+        # world.build 的 numpy 烘焙在 Intel 核显机上实测 ~9ms/帧，静止时
+        # 全省掉。相机移动阈值取 1/64 格（肉眼不可见但插值平滑）。
         opts = opts or {}
+        key = (round(camera.x / C.TILE * 64), round(camera.y / C.TILE * 64),
+               round(camera.zoom * 256), tuple(screen_size))
+        if not getattr(self, "_dirty", True) \
+                and key == getattr(self, "_last_key", None) and self.count > 0:
+            self.quad.geo_count = self.count
+            return self.cells
+        self._dirty = False
+        self._last_key = key
+
         sw, sh = screen_size
         zoom = camera.zoom
         tile_px = max(1, int(round(C.TILE * zoom)))

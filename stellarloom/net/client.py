@@ -86,6 +86,12 @@ class NetClient:
                 # M15c：服务端 mod 清单（客户端比对用，差异只警告不拒绝——
                 # 逻辑在服务端跑，客户端缺内容 mod 只是渲染占位）
                 self.server_mods = [tuple(m) for m in msg.get("mods", [])]
+                # M15d：镜像只读**自己**的背包。服务端关键帧是全量存档
+                # （含所有玩家，复用 dump 最简单、协议零新消息），客户端把
+                # player_index 拨到服务端分配的 id，inventory/craft 属性
+                # 自然只命中自己的 PlayerState；别人的背包留着但不读。
+                self.mirror.ensure_player(self.player_id)
+                self.mirror.player_index = self.player_id
                 self.connected = True
                 self._ever_connected = True
                 # 等首帧关键帧（其它消息入队，不许丢——服务端可能先发事件/聊天）

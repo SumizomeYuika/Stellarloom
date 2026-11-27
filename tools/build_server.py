@@ -38,6 +38,14 @@ ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "stellarloom"
 
 # 服务端需要的包/文件（相对 stellarloom/）
+#
+# M15d 修正：**也收客户端模块**（render/ui/input/core.game）。原因：
+# mod 顶层 `from stellarloom.render.layers import ChunkRenderer` 是正常写法
+# （gregtech 就这么写），服务端包里没有这些模块 → 加载 mod 时
+# ModuleNotFoundError。用户的规则是"mod 闯的祸不救"，但"包里缺模块"
+# 是服务端打包的问题，得修。
+# 真正的"逻辑层不许依赖 pygame"靠 check_closure 的 LOGIC_PREFIXES 守着，
+# 不靠"文件不在包里"。
 INCLUDE = [
     "__init__.py",
     "config.py",
@@ -53,11 +61,16 @@ INCLUDE = [
     "save/",
     "mod/",
     "net/",
-    "core/__init__.py",
-    "core/worldstate.py",
-    "render/__init__.py",
-    "render/camera.py",
+    "core/",
+    "render/",
+    "ui/",
+    "input/",
 ]
+
+# 逻辑层：这些目录/文件**绝对不许** import pygame（headless 服务端要能跑）
+LOGIC_PREFIXES = ("sim/", "world/", "logistics/", "production/", "power/",
+                  "tech/", "save/", "mod/", "net/", "config.py", "api.py",
+                  "registry.py", "core/worldstate.py", "core/errfmt.py")
 
 _SKIP_DIRS = {"__pycache__", ".git", "_cache", ".idea", ".vscode"}
 _SKIP_SUFFIX = {".pyc", ".pyo", ".DS_Store"}
@@ -112,15 +125,19 @@ def check_closure(files: dict[str, bytes]) -> list[str]:
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     mod = alias.name
-                    if mod == "pygame" or mod.startswith("pygame."):
-                        problems.append(f"{rel}: import {mod}")
+                    if (mod == "pygame" or mod.startswith("pygame.")) \
+                            and _is_logic(rel):
+                        problems.append(
+                            f"{rel}: 逻辑层 import {mod}（服务端要 headless）")
                     _check_mod(mod, rel, have, problems)
             elif isinstance(node, ast.ImportFrom):
                 if node.level and node.level > 0:
                     continue          # 相对 import 一定在包内
                 mod = node.module or ""
-                if mod == "pygame" or mod.startswith("pygame."):
-                    problems.append(f"{rel}: from {mod} import ...")
+                if (mod == "pygame" or mod.startswith("pygame.")) \
+                        and _is_logic(rel):
+                    problems.append(
+                        f"{rel}: 逻辑层 from {mod} import ...（服务端要 headless）")
                 _check_mod(mod, rel, have, problems)
         tmp = tempfile.NamedTemporaryFile(suffix=".py", delete=False)
         try:
@@ -132,6 +149,11 @@ def check_closure(files: dict[str, bytes]) -> list[str]:
         finally:
             Path(tmp.name).unlink(missing_ok=True)
     return problems
+
+
+def _is_logic(rel: str) -> bool:
+    """该文件是否属于"必须 headless"的逻辑层。"""
+    return any(rel.startswith(p) or rel == p for p in LOGIC_PREFIXES)
 
 
 def _check_mod(mod: str, rel: str, have: set[str], problems: list[str]):

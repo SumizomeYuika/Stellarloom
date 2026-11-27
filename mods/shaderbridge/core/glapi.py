@@ -1,25 +1,33 @@
-"""GLES 3.0 入口绑定（ctypes），零第三方依赖。
+"""桌面 OpenGL 门面（PyOpenGL 后端），Windows 专用。
 
-为什么不直接用 PyOpenGL：PyOpenGL 的 GLES3 模块要 import 时就解析全部
-入口，某些 Android 驱动缺符号会直接 ImportError，把 mod 整个带崩。
-这里按需逐符号 dlsym，缺哪个只影响用到它的功能，其余照跑。
+历史包袱说明：这个模块原来是"ctypes 逐符号 dlsym libGLESv2.so"的
+Android 方案。现在用户已拍板：**只支持 Windows 桌面，直接用 PyOpenGL**。
+GLES/EGL/ANGLE 那套全部砍掉。
 
-符号来源依次尝试：
-1. libGLESv2.so 的 dlsym（多数实现把 gl* 直接导出）
-2. eglGetProcAddress（GLES 规范正路，必须能覆盖扩展/新版入口）
+为什么还保留这层"门面"而不是让所有模块直接 `from OpenGL import GL`：
+上层（buffers / passes / program / world_gl / composite_gl）写代码时
+按 C 风格的 ctypes 调用约定写好了（`glGenTextures(1, byref(c_uint))`、
+`glGetShaderiv(sh, pname, byref(ok))`、指针参数等）。全部改成 PyOpenGL
+原生风格要动 130+ 处调用点，收益为零、风险全在。所以这里只做**一层
+薄薄的签名适配**：对外暴露与旧 ctypes 版完全相同的接口，对内调
+`OpenGL.GL`。跨平台复杂度集中在这一层被消灭。
 
-所有 argtypes 都显式声明——ctypes 默认把 Python int 当 c_int 传，
-指针参数会被截成 32 位，在 64 位 ARM 上直接段错误。
+前提：调用前必须有当前 GL 上下文（见 glctx.GLContext，WGL 离屏）。
+没有上下文时 PyOpenGL 会抛错——上层 composite_gl 会接住并干净降级。
 """
 
 import ctypes
-from ctypes import (POINTER, byref, c_char, c_char_p, c_float, c_int,
+# 这些名字上层直接 `glapi.byref / glapi.c_uint ...` 引用，必须继续透出
+from ctypes import (POINTER, byref, c_char, c_char_p, c_float, c_int,  # noqa
                     c_uint, c_void_p, create_string_buffer)
 
-GL_LIB_NAMES = ("libGLESv2.so", "libGLESv2.so.2", "libGLESv2.so.3")
-EGL_LIB_NAMES = ("libEGL.so", "libEGL.so.1")
+from OpenGL import GL as _gl
+
+GL_LIB_NAMES = ()   # 历史名字保留，桌面版不再从 .so 加载
+EGL_LIB_NAMES = ()
 
 # ---------------------------------------------------------------- 常量
+# GL 核心常量值在桌面 GL 与 GLES3 完全一致，原表保留。
 GL_VERSION = 0x1F02
 GL_RENDERER = 0x1F01
 GL_VENDOR = 0x1F00
@@ -124,205 +132,475 @@ GL_UNPACK_ALIGNMENT = 0x0CF5
 GL_PACK_ALIGNMENT = 0x0D05
 GL_NO_ERROR = 0
 
-# ---------------------------------------------------------------- 绑定表
-# (名字, 返回类型, 参数类型元组)
-_BINDINGS = [
-    # 状态
-    ("glGetString", c_char_p, (c_uint,)),
-    ("glGetIntegerv", None, (c_uint, POINTER(c_int))),
-    ("glGetError", c_uint, ()),
-    ("glViewport", None, (c_int, c_int, c_int, c_int)),
-    ("glScissor", None, (c_int, c_int, c_int, c_int)),
-    ("glEnable", None, (c_uint,)),
-    ("glDisable", None, (c_uint,)),
-    ("glBlendFunc", None, (c_uint, c_uint)),
-    ("glBlendFuncSeparate", None, (c_uint, c_uint, c_uint, c_uint)),
-    ("glBlendEquation", None, (c_uint,)),
-    ("glBlendEquationSeparate", None, (c_uint, c_uint)),
-    ("glColorMask", None, (c_uint, c_uint, c_uint, c_uint)),
-    ("glDepthMask", None, (c_uint,)),
-    ("glDepthFunc", None, (c_uint,)),
-    ("glClear", None, (c_uint,)),
-    ("glClearColor", None, (c_float, c_float, c_float, c_float)),
-    ("glClearDepthf", None, (c_float,)),
-    ("glCullFace", None, (c_uint,)),
-    ("glFrontFace", None, (c_uint,)),
-    ("glPixelStorei", None, (c_uint, c_int)),
-    ("glFinish", None, ()),
-    ("glFlush", None, ()),
-    # 着色器
-    ("glCreateShader", c_uint, (c_uint,)),
-    ("glShaderSource", None, (c_uint, c_int, POINTER(c_char_p), c_void_p)),
-    ("glCompileShader", None, (c_uint,)),
-    ("glGetShaderiv", None, (c_uint, c_uint, POINTER(c_int))),
-    ("glGetShaderInfoLog", None, (c_uint, c_int, c_void_p, c_char_p)),
-    ("glDeleteShader", None, (c_uint,)),
-    ("glCreateProgram", c_uint, ()),
-    ("glAttachShader", None, (c_uint, c_uint)),
-    ("glBindAttribLocation", None, (c_uint, c_uint, c_char_p)),
-    ("glLinkProgram", None, (c_uint,)),
-    ("glGetProgramiv", None, (c_uint, c_uint, POINTER(c_int))),
-    ("glGetProgramInfoLog", None, (c_uint, c_int, c_void_p, c_char_p)),
-    ("glUseProgram", None, (c_uint,)),
-    ("glDeleteProgram", None, (c_uint,)),
-    ("glGetUniformLocation", c_int, (c_uint, c_char_p)),
-    ("glGetAttribLocation", c_int, (c_uint, c_char_p)),
-    # uniform
-    ("glUniform1i", None, (c_int, c_int)),
-    ("glUniform2i", None, (c_int, c_int, c_int)),
-    ("glUniform3i", None, (c_int, c_int, c_int, c_int)),
-    ("glUniform4i", None, (c_int, c_int, c_int, c_int, c_int)),
-    ("glUniform1f", None, (c_int, c_float)),
-    ("glUniform2f", None, (c_int, c_float, c_float)),
-    ("glUniform3f", None, (c_int, c_float, c_float, c_float)),
-    ("glUniform4f", None, (c_int, c_float, c_float, c_float, c_float)),
-    ("glUniform1fv", None, (c_int, c_int, POINTER(c_float))),
-    ("glUniform2fv", None, (c_int, c_int, POINTER(c_float))),
-    ("glUniform3fv", None, (c_int, c_int, POINTER(c_float))),
-    ("glUniform4fv", None, (c_int, c_int, POINTER(c_float))),
-    ("glUniform1iv", None, (c_int, c_int, POINTER(c_int))),
-    ("glUniform2iv", None, (c_int, c_int, POINTER(c_int))),
-    ("glUniform3iv", None, (c_int, c_int, POINTER(c_int))),
-    ("glUniform4iv", None, (c_int, c_int, POINTER(c_int))),
-    ("glUniformMatrix2fv", None, (c_int, c_int, c_uint, POINTER(c_float))),
-    ("glUniformMatrix3fv", None, (c_int, c_int, c_uint, POINTER(c_float))),
-    ("glUniformMatrix4fv", None, (c_int, c_int, c_uint, POINTER(c_float))),
-    # 纹理
-    ("glGenTextures", None, (c_int, POINTER(c_uint))),
-    ("glBindTexture", None, (c_uint, c_uint)),
-    ("glTexImage2D", None, (c_uint, c_int, c_int, c_int, c_int, c_int,
-                            c_uint, c_uint, c_void_p)),
-    ("glTexSubImage2D", None, (c_uint, c_int, c_int, c_int, c_int, c_int,
-                               c_uint, c_uint, c_void_p)),
-    ("glTexParameteri", None, (c_uint, c_uint, c_int)),
-    ("glTexParameterf", None, (c_uint, c_uint, c_float)),
-    ("glActiveTexture", None, (c_uint,)),
-    ("glDeleteTextures", None, (c_int, POINTER(c_uint))),
-    ("glGenerateMipmap", None, (c_uint,)),
-    # FBO / RBO
-    ("glGenFramebuffers", None, (c_int, POINTER(c_uint))),
-    ("glBindFramebuffer", None, (c_uint, c_uint)),
-    ("glFramebufferTexture2D", None, (c_uint, c_uint, c_uint, c_uint, c_int)),
-    ("glCheckFramebufferStatus", c_uint, (c_uint,)),
-    ("glDrawBuffers", None, (c_int, POINTER(c_uint))),
-    ("glDeleteFramebuffers", None, (c_int, POINTER(c_uint))),
-    ("glGenRenderbuffers", None, (c_int, POINTER(c_uint))),
-    ("glBindRenderbuffer", None, (c_uint, c_uint)),
-    ("glRenderbufferStorage", None, (c_uint, c_uint, c_int, c_int)),
-    ("glFramebufferRenderbuffer", None, (c_uint, c_uint, c_uint, c_uint)),
-    ("glDeleteRenderbuffers", None, (c_int, POINTER(c_uint))),
-    ("glBlitFramebuffer", None, (c_int, c_int, c_int, c_int, c_int, c_int,
-                                 c_int, c_int, c_uint, c_uint)),
-    # VAO / VBO
-    ("glGenVertexArrays", None, (c_int, POINTER(c_uint))),
-    ("glBindVertexArray", None, (c_uint,)),
-    ("glDeleteVertexArrays", None, (c_int, POINTER(c_uint))),
-    ("glGenBuffers", None, (c_int, POINTER(c_uint))),
-    ("glBindBuffer", None, (c_uint, c_uint)),
-    ("glBufferData", None, (c_uint, c_void_p, c_void_p, c_uint)),
-    ("glBufferSubData", None, (c_uint, c_void_p, c_void_p, c_void_p)),
-    ("glEnableVertexAttribArray", None, (c_uint,)),
-    ("glDisableVertexAttribArray", None, (c_uint,)),
-    ("glVertexAttribPointer", None, (c_uint, c_int, c_uint, c_uint,
-                                     c_int, c_void_p)),
-    ("glDrawArrays", None, (c_uint, c_int, c_int)),
-    ("glDrawElements", None, (c_uint, c_int, c_uint, c_void_p)),
-    ("glDeleteBuffers", None, (c_int, POINTER(c_uint))),
-    # 读回
-    ("glReadPixels", None, (c_int, c_int, c_int, c_int, c_uint, c_uint,
-                            c_void_p)),
-]
+# ---- compatibility profile 专用：固定管线矩阵与 client-state 顶点数组。
+# 光影包的 GLSL 直接读 gl_ModelViewProjectionMatrix / gl_TextureMatrix /
+# gl_MultiTexCoord0 等内建（compatibility profile 下存在），这些不是
+# uniform，必须由固定管线状态喂——所以才有下面这组"老 GL"入口。
+GL_MODELVIEW = 0x1700
+GL_PROJECTION = 0x1701
+GL_TEXTURE = 0x1702
+GL_VERTEX_ARRAY = 0x8074
+GL_NORMAL_ARRAY = 0x8075
+GL_COLOR_ARRAY = 0x8076
+GL_TEXTURE_COORD_ARRAY = 0x8078
+GL_ACTIVE_TEXTURE = 0x84E0
 
 
 class GLError(Exception):
     pass
 
 
-class GLAPI:
-    """按需绑定的 GLES3 门面。用一个 dict 做方法分派，缺符号只在调用时炸。"""
+# ---------------------------------------------------------------- 指针适配
+def _unwrap(ptr):
+    """byref(x) / cast 出来的 CArgObject → 里面的 ctypes 对象。"""
+    return getattr(ptr, "_obj", ptr)
 
-    def __init__(self, lib, resolver):
-        self._lib = lib
-        self._resolver = resolver
-        self._cache = {}
+
+def _addr(data):
+    """把调用方给的数据参数转成 PyOpenGL 能吃的形式。
+
+    调用方会给三类东西：None（空上传）、ctypes 数组/缓冲、c_void_p。
+    PyOpenGL 直接吃前两类的 buffer 接口对象；c_void_p 只有地址，必须
+    结合调用点已知的字节数包一层 from_address。
+    """
+    if data is None:
+        return None
+    if isinstance(data, c_void_p):
+        if not data.value:
+            return None
+        return data.value          # int 地址，配合 _from_addr 使用
+    return data
+
+
+def _from_addr(addr, nbytes):
+    return (c_char * int(nbytes)).from_address(addr)
+
+
+class GLAPI:
+    """与旧 ctypes 版同签名的桌面 GL 门面。
+
+    所有方法只是把参数从 ctypes 风格翻成 PyOpenGL 风格，不做任何
+    额外状态管理。缺入口在桌面 GL 3.3 上不存在（全部核心入口）。
+    """
+
+    def __init__(self):
         self.missing = []
 
-    def __getattr__(self, name):
-        fn = self._cache.get(name)
-        if fn is not None:
-            return fn
-        # 常量（GL_VERSION 这类）：直接透出模块级值，不当函数绑定
-        if name.startswith("GL_") and name in globals():
-            return globals()[name]
-        spec = _SPECS.get(name)
-        if spec is None:
-            raise AttributeError("未登记的 GL 入口: %s" % name)
-        restype, argtypes = spec
-        raw = self._resolver(name)
-        if raw is None:
-            self.missing.append(name)
-            raise GLError("驱动缺少 GL 入口: %s" % name)
-        fn = ctypes.CFUNCTYPE(restype, *argtypes)(raw)
-        self._cache[name] = fn
-        return fn
+    # ------------------------------------------------ 状态 / 查询
+    def glGetString(self, name):
+        return _gl.glGetString(name)
+
+    def glGetIntegerv(self, pname, out):
+        v = _gl.glGetIntegerv(pname)
+        _unwrap(out).value = int(v)
+
+    def glGetError(self):
+        return _gl.glGetError()
+
+    def glViewport(self, x, y, w, h):
+        _gl.glViewport(x, y, w, h)
+
+    def glScissor(self, x, y, w, h):
+        _gl.glScissor(x, y, w, h)
+
+    def glEnable(self, cap):
+        _gl.glEnable(cap)
+
+    def glDisable(self, cap):
+        _gl.glDisable(cap)
+
+    def glBlendFunc(self, s, d):
+        _gl.glBlendFunc(s, d)
+
+    def glBlendFuncSeparate(self, s, d, sa, da):
+        _gl.glBlendFuncSeparate(s, d, sa, da)
+
+    def glBlendEquation(self, m):
+        _gl.glBlendEquation(m)
+
+    def glBlendEquationSeparate(self, mrgb, ma):
+        _gl.glBlendEquationSeparate(mrgb, ma)
+
+    def glColorMask(self, r, g, b, a):
+        _gl.glColorMask(r, g, b, a)
+
+    def glDepthMask(self, f):
+        _gl.glDepthMask(f)
+
+    def glDepthFunc(self, f):
+        _gl.glDepthFunc(f)
+
+    def glClear(self, mask):
+        _gl.glClear(mask)
+
+    def glClearColor(self, r, g, b, a):
+        _gl.glClearColor(r, g, b, a)
+
+    def glClearDepthf(self, d):
+        # 桌面 GL 没有 glClearDepthf，glClearDepth 语义相同（参数 double）
+        _gl.glClearDepth(float(d))
+
+    def glCullFace(self, m):
+        _gl.glCullFace(m)
+
+    def glFrontFace(self, m):
+        _gl.glFrontFace(m)
+
+    def glPixelStorei(self, pname, v):
+        _gl.glPixelStorei(pname, v)
+
+    # -------------------------------------- 固定管线矩阵（compatibility）
+    def glMatrixMode(self, mode):
+        _gl.glMatrixMode(mode)
+
+    def glLoadMatrixf(self, m16):
+        """m16: 16 float 列主序序列。"""
+        arr = (c_float * 16)(*[float(x) for x in m16])
+        _gl.glLoadMatrixf(arr)
+
+    def glLoadIdentity(self):
+        _gl.glLoadIdentity()
+
+    def glGetActiveTexture(self):
+        return int(_gl.glGetIntegerv(GL_ACTIVE_TEXTURE))
+
+    # --------------------------------- client-state 顶点数组（compatibility）
+    def glEnableClientState(self, cap):
+        _gl.glEnableClientState(cap)
+
+    def glDisableClientState(self, cap):
+        _gl.glDisableClientState(cap)
+
+    def glVertexPointer(self, size, typ, stride, ptr):
+        _gl.glVertexPointer(size, typ, stride, self._off_ptr(ptr))
+
+    def glColorPointer(self, size, typ, stride, ptr):
+        _gl.glColorPointer(size, typ, stride, self._off_ptr(ptr))
+
+    def glNormalPointer(self, typ, stride, ptr):
+        _gl.glNormalPointer(typ, stride, self._off_ptr(ptr))
+
+    def glTexCoordPointer(self, size, typ, stride, ptr):
+        _gl.glTexCoordPointer(size, typ, stride, self._off_ptr(ptr))
+
+    def glClientActiveTexture(self, unit):
+        _gl.glClientActiveTexture(unit)
+
+    @staticmethod
+    def _off_ptr(ptr):
+        """VBO 内字节偏移 → PyOpenGL 能吃的指针。None=0。"""
+        if ptr is None:
+            return ctypes.c_void_p(0)
+        if isinstance(ptr, c_void_p):
+            return ptr
+        return ctypes.c_void_p(int(ptr))
+
+    def glFinish(self):
+        _gl.glFinish()
+
+    def glFlush(self):
+        _gl.glFlush()
+
+    # ------------------------------------------------ 着色器 / 程序
+    def glCreateShader(self, kind):
+        return int(_gl.glCreateShader(kind))
+
+    def glShaderSource(self, sh, count, strings, lengths):
+        # 调用方给 (c_char_p * 1)(src)；桌面直接传 bytes 列表
+        srcs = [strings[i] for i in range(count)]
+        _gl.glShaderSource(sh, srcs)
+
+    def glCompileShader(self, sh):
+        _gl.glCompileShader(sh)
+
+    def glGetShaderiv(self, sh, pname, out):
+        _unwrap(out).value = int(_gl.glGetShaderiv(sh, pname))
+
+    def glGetShaderInfoLog(self, sh, bufsize, length, buf):
+        log = _gl.glGetShaderInfoLog(sh) or b""
+        self._write_buf(buf, log)
+
+    def glDeleteShader(self, sh):
+        _gl.glDeleteShader(sh)
+
+    def glCreateProgram(self):
+        return int(_gl.glCreateProgram())
+
+    def glAttachShader(self, prog, sh):
+        _gl.glAttachShader(prog, sh)
+
+    def glBindAttribLocation(self, prog, idx, name):
+        _gl.glBindAttribLocation(prog, idx, name)
+
+    def glLinkProgram(self, prog):
+        _gl.glLinkProgram(prog)
+
+    def glGetProgramiv(self, prog, pname, out):
+        _unwrap(out).value = int(_gl.glGetProgramiv(prog, pname))
+
+    def glGetProgramInfoLog(self, prog, bufsize, length, buf):
+        log = _gl.glGetProgramInfoLog(prog) or b""
+        self._write_buf(buf, log)
+
+    def glUseProgram(self, prog):
+        _gl.glUseProgram(prog)
+
+    def glDeleteProgram(self, prog):
+        _gl.glDeleteProgram(prog)
+
+    def glGetUniformLocation(self, prog, name):
+        return int(_gl.glGetUniformLocation(prog, name))
+
+    def glGetAttribLocation(self, prog, name):
+        return int(_gl.glGetAttribLocation(prog, name))
+
+    @staticmethod
+    def _write_buf(buf, data):
+        """把 bytes 写进调用方的 create_string_buffer（含 \0 结尾）。"""
+        if buf is None:
+            return
+        if isinstance(buf, c_char_p):
+            return
+        n = min(len(data), ctypes.sizeof(buf) - 1)
+        if n > 0:
+            ctypes.memmove(buf, data, n)
+        ctypes.memset(ctypes.addressof(buf) + n, 0, 1)
+
+    # ------------------------------------------------ uniform
+    def glUniform1i(self, l, a):
+        _gl.glUniform1i(l, a)
+
+    def glUniform2i(self, l, a, b):
+        _gl.glUniform2i(l, a, b)
+
+    def glUniform3i(self, l, a, b, c):
+        _gl.glUniform3i(l, a, b, c)
+
+    def glUniform4i(self, l, a, b, c, d):
+        _gl.glUniform4i(l, a, b, c, d)
+
+    def glUniform1f(self, l, a):
+        _gl.glUniform1f(l, a)
+
+    def glUniform2f(self, l, a, b):
+        _gl.glUniform2f(l, a, b)
+
+    def glUniform3f(self, l, a, b, c):
+        _gl.glUniform3f(l, a, b, c)
+
+    def glUniform4f(self, l, a, b, c, d):
+        _gl.glUniform4f(l, a, b, c, d)
+
+    def glUniform1fv(self, l, n, p):
+        _gl.glUniform1fv(l, n, _unwrap(p))
+
+    def glUniform2fv(self, l, n, p):
+        _gl.glUniform2fv(l, n, _unwrap(p))
+
+    def glUniform3fv(self, l, n, p):
+        _gl.glUniform3fv(l, n, _unwrap(p))
+
+    def glUniform4fv(self, l, n, p):
+        _gl.glUniform4fv(l, n, _unwrap(p))
+
+    def glUniform1iv(self, l, n, p):
+        _gl.glUniform1iv(l, n, _unwrap(p))
+
+    def glUniform2iv(self, l, n, p):
+        _gl.glUniform2iv(l, n, _unwrap(p))
+
+    def glUniform3iv(self, l, n, p):
+        _gl.glUniform3iv(l, n, _unwrap(p))
+
+    def glUniform4iv(self, l, n, p):
+        _gl.glUniform4iv(l, n, _unwrap(p))
+
+    def glUniformMatrix2fv(self, l, n, t, p):
+        _gl.glUniformMatrix2fv(l, n, bool(t), _unwrap(p))
+
+    def glUniformMatrix3fv(self, l, n, t, p):
+        _gl.glUniformMatrix3fv(l, n, bool(t), _unwrap(p))
+
+    def glUniformMatrix4fv(self, l, n, t, p):
+        _gl.glUniformMatrix4fv(l, n, bool(t), _unwrap(p))
+
+    # ------------------------------------------------ 纹理
+    def glGenTextures(self, n, out):
+        ids = _gl.glGenTextures(n)
+        self._fill_ids(n, ids, out)
+
+    def glBindTexture(self, target, tex):
+        _gl.glBindTexture(target, tex)
+
+    def glTexImage2D(self, target, level, internal, w, h, border, fmt,
+                     typ, data):
+        _gl.glTexImage2D(target, level, internal, w, h, border, fmt, typ,
+                         _addr(data))
+
+    def glTexSubImage2D(self, target, level, x, y, w, h, fmt, typ, data):
+        _gl.glTexSubImage2D(target, level, x, y, w, h, fmt, typ,
+                            _addr(data))
+
+    def glTexParameteri(self, target, pname, v):
+        _gl.glTexParameteri(target, pname, v)
+
+    def glTexParameterf(self, target, pname, v):
+        _gl.glTexParameterf(target, pname, v)
+
+    def glActiveTexture(self, unit):
+        _gl.glActiveTexture(unit)
+
+    def glDeleteTextures(self, n, out):
+        ids = [_unwrap(out)[i] for i in range(n)] if n > 1 \
+            else [_unwrap(out).value]
+        _gl.glDeleteTextures(ids)
+
+    def glGenerateMipmap(self, target):
+        _gl.glGenerateMipmap(target)
+
+    # ------------------------------------------------ FBO / RBO
+    def glGenFramebuffers(self, n, out):
+        self._fill_ids(n, _gl.glGenFramebuffers(n), out)
+
+    def glBindFramebuffer(self, target, fbo):
+        _gl.glBindFramebuffer(target, fbo)
+
+    def glFramebufferTexture2D(self, target, attach, textarget, tex, level):
+        _gl.glFramebufferTexture2D(target, attach, textarget, tex, level)
+
+    def glCheckFramebufferStatus(self, target):
+        return int(_gl.glCheckFramebufferStatus(target))
+
+    def glDrawBuffers(self, n, bufs):
+        if n == 0 or bufs is None:
+            _gl.glDrawBuffer(GL_NONE)
+            return
+        arr = [_unwrap(bufs)[i] for i in range(n)]
+        _gl.glDrawBuffers(arr)
+
+    def glReadBuffer(self, mode):
+        _gl.glReadBuffer(mode)
+
+    def glDeleteFramebuffers(self, n, out):
+        ids = [_unwrap(out)[i] for i in range(n)] if n > 1 \
+            else [_unwrap(out).value]
+        _gl.glDeleteFramebuffers(ids)
+
+    def glGenRenderbuffers(self, n, out):
+        self._fill_ids(n, _gl.glGenRenderbuffers(n), out)
+
+    def glBindRenderbuffer(self, target, rbo):
+        _gl.glBindRenderbuffer(target, rbo)
+
+    def glRenderbufferStorage(self, target, fmt, w, h):
+        _gl.glRenderbufferStorage(target, fmt, w, h)
+
+    def glFramebufferRenderbuffer(self, target, attach, rbtarget, rbo):
+        _gl.glFramebufferRenderbuffer(target, attach, rbtarget, rbo)
+
+    def glDeleteRenderbuffers(self, n, out):
+        ids = [_unwrap(out)[i] for i in range(n)] if n > 1 \
+            else [_unwrap(out).value]
+        _gl.glDeleteRenderbuffers(ids)
+
+    def glBlitFramebuffer(self, *a):
+        _gl.glBlitFramebuffer(*a)
+
+    # ------------------------------------------------ VAO / VBO
+    def glGenVertexArrays(self, n, out):
+        self._fill_ids(n, _gl.glGenVertexArrays(n), out)
+
+    def glBindVertexArray(self, vao):
+        _gl.glBindVertexArray(vao)
+
+    def glDeleteVertexArrays(self, n, out):
+        ids = [_unwrap(out)[i] for i in range(n)] if n > 1 \
+            else [_unwrap(out).value]
+        _gl.glDeleteVertexArrays(ids)
+
+    def glGenBuffers(self, n, out):
+        self._fill_ids(n, _gl.glGenBuffers(n), out)
+
+    def glBindBuffer(self, target, buf):
+        _gl.glBindBuffer(target, buf)
+
+    def glBufferData(self, target, nbytes, data, usage):
+        if isinstance(data, c_void_p) and data.value:
+            data = _from_addr(data.value, nbytes)
+        elif isinstance(data, int):
+            data = _from_addr(data, nbytes)
+        _gl.glBufferData(target, int(nbytes), data, usage)
+
+    def glBufferSubData(self, target, offset, nbytes, data):
+        if isinstance(data, c_void_p) and data.value:
+            data = _from_addr(data.value, nbytes)
+        elif isinstance(data, int):
+            data = _from_addr(data, nbytes)
+        _gl.glBufferSubData(target, int(offset), int(nbytes), data)
+
+    def glEnableVertexAttribArray(self, idx):
+        _gl.glEnableVertexAttribArray(idx)
+
+    def glDisableVertexAttribArray(self, idx):
+        _gl.glDisableVertexAttribArray(idx)
+
+    def glVertexAttribPointer(self, idx, size, typ, norm, stride, ptr):
+        # ptr 是 VBO 内字节偏移。坑（实测 Intel + PyOpenGL 3.1.10）：
+        # 直接传 Python int 会被 PyOpenGL 当成"数组对象"取它自己的堆地址，
+        # 写进 VAO 的是 0x1E7Axxxxxxxx 这种垃圾指针——attr0 传 None 碰巧
+        # 正确，attr1..4 全废，着色器读到全零（世界层全黑的根因）。
+        # 必须包成 c_void_p，PyOpenGL 才会按裸指针值使用。
+        if isinstance(ptr, c_void_p):
+            ptr = ptr.value
+        if isinstance(ptr, int):
+            ptr = ctypes.c_void_p(ptr)
+        _gl.glVertexAttribPointer(idx, size, typ, bool(norm), stride, ptr)
+
+    def glDrawArrays(self, mode, first, count):
+        _gl.glDrawArrays(mode, first, count)
+
+    def glDrawElements(self, mode, count, typ, ptr):
+        if isinstance(ptr, c_void_p):
+            ptr = ptr.value
+        if isinstance(ptr, int):
+            ptr = ctypes.c_void_p(ptr)
+        _gl.glDrawElements(mode, count, typ, ptr)
+
+    def glDeleteBuffers(self, n, out):
+        ids = [_unwrap(out)[i] for i in range(n)] if n > 1 \
+            else [_unwrap(out).value]
+        _gl.glDeleteBuffers(ids)
+
+    # ------------------------------------------------ 读回
+    def glReadPixels(self, x, y, w, h, fmt, typ, out):
+        buf = _unwrap(out)
+        _gl.glReadPixels(x, y, w, h, fmt, typ, buf)
+
+    # ------------------------------------------------ 工具
+    @staticmethod
+    def _fill_ids(n, ids, out):
+        """PyOpenGL 的 glGen*(1) 返回可能是 int / numpy 标量 / 数组，
+        统一落到调用方的指针里。"""
+        o = _unwrap(out)
+        if n == 1:
+            try:
+                o.value = int(ids)          # int 或 numpy 标量
+            except TypeError:
+                o.value = int(ids[0])       # 真数组
+        else:
+            for i in range(n):
+                o[i] = int(ids[i])
 
     def has(self, name):
-        try:
-            getattr(self, name)
-            return True
-        except GLError:
-            return False
+        return hasattr(_gl, name)
 
     def check(self, where=""):
-        """把 GL 错误码翻成可读信息；无错返回 None。"""
-        err = self.glGetError()
+        err = _gl.glGetError()
         if err == GL_NO_ERROR:
             return None
         return "GL error 0x%04X @ %s" % (err, where or "?")
 
 
-_SPECS = {name: (rt, at) for name, rt, at in _BINDINGS}
-
-
 def open_gl():
-    """加载 libGLESv2 并返回 GLAPI。失败抛 GLError。"""
-    lib = None
-    for n in GL_LIB_NAMES:
-        try:
-            lib = ctypes.CDLL(n)
-            break
-        except OSError:
-            continue
-    if lib is None:
-        raise GLError("找不到 libGLESv2.so")
-
-    egl = None
-    for n in EGL_LIB_NAMES:
-        try:
-            egl = ctypes.CDLL(n)
-            break
-        except OSError:
-            continue
-    getproc = None
-    if egl is not None:
-        try:
-            getproc = egl.eglGetProcAddress
-            getproc.restype = c_void_p
-            getproc.argtypes = (c_char_p,)
-        except AttributeError:
-            getproc = None
-
-    def resolver(name):
-        raw = None
-        try:
-            raw = ctypes.cast(getattr(lib, name), c_void_p).value
-        except AttributeError:
-            raw = None
-        if not raw and getproc is not None:
-            try:
-                raw = getproc(name.encode())
-            except Exception:
-                raw = None
-        return raw
-
-    return GLAPI(lib, resolver)
+    """返回桌面 GL 门面。没有当前上下文时由第一次调用炸出，上层接住。"""
+    return GLAPI()

@@ -112,21 +112,30 @@ def main() -> int:
         (d / "mod.json").write_text(
             json.dumps({"name": name, "version": "1.0"}), encoding="utf-8")
         (d / "main.py").write_text("X=1\n", encoding="utf-8")
-    bad_dir = tmp_mods / "m_bad"
-    bad_dir.mkdir()
-    (bad_dir / "mod.json").write_text(
-        json.dumps({"name": "m_bad", "version": "1.0"}), encoding="utf-8")
-    (bad_dir / "main.py").write_text("def ::\n", encoding="utf-8")
     prog = []
     mgr = load_mods(g, tmp_mods,
                     progress=lambda n, i, t: prog.append((n, i, t)))
     loaded = [c.name for c in mgr.ctxs]
     check(sorted(loaded) == ["m_a", "m_b"], f"加载列表错: {loaded}")
-    # progress 覆盖全部尝试项（含加载失败者，loading bar 按扫描总数走）
-    check([n for n, _, _ in prog] == ["m_a", "m_b", "m_bad"],
+    check([n for n, _, _ in prog] == ["m_a", "m_b"],
           f"progress 顺序错: {prog}")
-    check(all(t == 3 for _, _, t in prog),
+    check(all(t == 2 for _, _, t in prog),
           f"progress 总数错: {prog}")
+    # M15d：坏 mod 加载直接 raise（progress 先报该项，随后异常上抛）
+    bad_dir = Path(tempfile.mkdtemp(prefix="slm_loadbad_"))
+    (bad_dir / "m_bad").mkdir()
+    (bad_dir / "m_bad" / "mod.json").write_text(
+        json.dumps({"name": "m_bad", "version": "1.0"}), encoding="utf-8")
+    (bad_dir / "m_bad" / "main.py").write_text("def ::\n", encoding="utf-8")
+    prog2 = []
+    try:
+        load_mods(g, bad_dir,
+                  progress=lambda n, i, t: prog2.append((n, i, t)))
+        check(False, "坏 mod 没抛异常（M15d 要求出错即崩）")
+    except Exception:
+        check(True, "坏 mod raise ✓")
+    check([n for n, _, _ in prog2] == ["m_bad"],
+          f"坏 mod 的 progress 没先报: {prog2}")
     g.mod_mgr.unload()
 
     # ---------- [4] main/mixins 入口 ----------
@@ -169,24 +178,27 @@ def main() -> int:
     check(mx_mod.MX_COUNT[0] == 1,
           f"mixin 没生效: {mx_mod.MX_COUNT[0]}")
 
-    # ---------- [5] 坏入口拒绝 ----------
+    # ---------- [5] 坏入口拒绝（M15d：各坏 mod 独立目录，断言 raise） ----------
     print("[5] 坏入口拒绝:")
     for name, extra in (
             ("m_nomain", {"main": "nope.py"}),
             ("m_nomix", {"mixins": ["no/such.py"]}),
             ("m_evil", {"main": "../evil.py"})):
-        d = tmp_mods / name
-        d.mkdir(exist_ok=True)
-        (d / "mod.json").write_text(
+        bd = Path(tempfile.mkdtemp(prefix="slm_badentry_")) / name
+        bd.mkdir(parents=True)
+        (bd / "mod.json").write_text(
             json.dumps({"name": name, "version": "1.0", **extra}),
             encoding="utf-8")
-        (d / "main.py").write_text("Y=1\n", encoding="utf-8")
+        (bd / "main.py").write_text("Y=1\n", encoding="utf-8")
+        try:
+            load_mods(g, bd.parent)
+            check(False, f"{name} 没抛异常（M15d 要求出错即崩）")
+        except Exception:
+            check(True, f"{name} raise ✓")
+    # 好 mod 目录不受影响（m_entry 还在 tmp_mods，单独加载无恙）
     mgr3 = load_mods(g, tmp_mods)
-    fnames = {n for n, _ in mgr3.failed}
-    check({"m_nomain", "m_nomix", "m_evil"} <= fnames,
-          f"坏入口没全拒: {mgr3.failed}")
     check("m_entry" in [c.name for c in mgr3.ctxs],
-          "好 mod 被连坐")
+          "好 mod 加载失败")
 
     # ---------- [6] 打包 mod 的入口字段 ----------
     print("[6] 打包 mod 入口字段:")

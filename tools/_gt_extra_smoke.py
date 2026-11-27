@@ -29,7 +29,8 @@ def main() -> int:
     from stellarloom.core import Game
     g = Game(screen)
     mgr = g.mod_mgr
-    assert not mgr.failed, f"加载失败 {mgr.failed}"
+    # M15d：出错即崩，能到这里即"未抛异常"；failed 恒为空
+    assert mgr.failed == [], f"failed 应恒为空 {mgr.failed}"
     names = [c.name for c in mgr.ctxs]
     assert "gregtech_extra" in names and "gregtech_heavy" in names, names
 

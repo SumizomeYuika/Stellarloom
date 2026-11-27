@@ -36,7 +36,8 @@ def main() -> int:
     names = [c.name for c in mgr.ctxs]
     print("mods:", names, "failed:", mgr.failed)
     assert any(c.name == "gregtech_heavy" for c in mgr.ctxs), "GT mod 未加载"
-    assert not mgr.failed, f"加载失败 {mgr.failed}"
+    # M15d：出错即崩，能到这里即"未抛异常"；failed 恒为空
+    assert mgr.failed == [], f"failed 应恒为空 {mgr.failed}"
 
     # 底栏分类里有「重工」
     from stellarloom.ui import touch_ui as TUI

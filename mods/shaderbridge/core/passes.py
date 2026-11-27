@@ -264,26 +264,33 @@ _BLEND_FACTOR = {
 class FullscreenQuad:
     """全屏四边形（后处理用）与共享的几何绘制入口。
 
-    关键：属性名必须与转译器产出的一致。转译器把 gl_Vertex 换成
-    slm_vertex、gl_MultiTexCoord0 换成 slm_uv0……所以这里的 VSH 和
-    glBindAttribLocation 全用 slm_*，否则驱动自己分配位置，什么都画不出来。
+    compatibility profile 下的喂法（实测 Intel UHD 4.6 compatibility）：
+    包里的 GLSL 直接读**固定管线内建属性**——gl_Vertex / gl_Color /
+    gl_MultiTexCoord0/1。这些不是 generic attribute，glBindAttribLocation
+    绑内建名会被驱动拒绝（GL_INVALID_OPERATION），generic slot 8 也不
+    做别名。唯一可靠的路是 **client-state 固定管线指针**
+    （glVertexPointer / glColorPointer / glTexCoordPointer），数据照样
+    可以放 VBO 里（指针参数就是 VBO 内字节偏移）。client state 不属于
+    VAO 状态，所以每次 draw 现场设置指针。
+
+    唯一的 generic 属性是 mc_Entity（OptiFine 扩展自定义属性），
+    仍走 glBindAttribLocation(prog, 4, "mc_Entity") + VAO 里的
+    glVertexAttribPointer(4)。
     """
 
-    # 全屏三角：顶点是 NDC（z=0, w=1），包里的 vsh 会拿 slm_mvp * slm_vertex，
-    # 所以全屏 pass 的 slm_mvp 必须是单位阵。
-    VSH = """#version 300 es
-in vec4 slm_vertex;
-out vec2 v_uv;
+    # 全屏 pass 缺 vsh 时的兜底着色器：与包同款的 legacy 写法。
+    VSH = """#version 150 compatibility
 void main() {
-    v_uv = slm_vertex.xy * 0.5 + 0.5;
-    gl_Position = vec4(slm_vertex.xy, 0.0, 1.0);
+    gl_Position = ftransform();
+    gl_TexCoord[0] = gl_MultiTexCoord0;
 }
 """
 
-    # 几何 pass 的属性绑定（名字 -> 位置）
-    GEO_ATTRS = {"slm_vertex": 0, "slm_uv0": 1, "slm_color": 2,
-                 "slm_uv1": 3, "mc_Entity": 4}
-    QUAD_ATTRS = {"slm_vertex": 0}
+    # 几何 pass 的 generic 属性绑定：只有 mc_Entity 走这条路。
+    GEO_ATTRS = {"mc_Entity": 4}
+    # 全屏 pass 没有 generic 属性（gl_Vertex/gl_MultiTexCoord0 全走
+    # client-state 指针）。
+    QUAD_ATTRS = {}
 
     def __init__(self, api):
         self.api = api
@@ -296,13 +303,16 @@ void main() {
 
     def _setup(self):
         api = self.api
-        # 两个三角形覆盖 [-1,1]²；vec4 顶点（w=1）与 slm_vertex 声明一致
-        verts = [-1.0, -1.0, 0.0, 1.0,
-                 1.0, -1.0, 0.0, 1.0,
-                 -1.0, 1.0, 0.0, 1.0,
-                 1.0, -1.0, 0.0, 1.0,
-                 1.0, 1.0, 0.0, 1.0,
-                 -1.0, 1.0, 0.0, 1.0]
+        # 两个三角形覆盖 [-1,1]²。交错布局：vec4 顶点（w=1）+ vec4 uv
+        # （u,v,0,1；uv = NDC*0.5+0.5），stride 8 float。
+        # uv 必须真给数据：包的全屏 vsh 从 gl_MultiTexCoord0 取 vTexCoord，
+        # 缺了全屏链只会采到 (0,0) 一个点 → 整条后处理链全黑。
+        verts = []
+        for x, y in ((-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0),
+                     (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)):
+            u = x * 0.5 + 0.5
+            v = y * 0.5 + 0.5
+            verts += [x, y, 0.0, 1.0, u, v, 0.0, 1.0]
         arr = (glapi.c_float * len(verts))(*verts)
         vid = glapi.c_uint(0)
         api.glGenVertexArrays(1, glapi.byref(vid))
@@ -317,24 +327,66 @@ void main() {
                          ctypes.sizeof(arr),
                          ctypes.cast(arr, glapi.c_void_p),
                          glapi.GL_STATIC_DRAW)
-        api.glEnableVertexAttribArray(0)
-        api.glVertexAttribPointer(0, 4, glapi.GL_FLOAT, glapi.GL_FALSE,
-                                  0, None)
         api.glBindVertexArray(0)
+
+    def _draw_client(self, vbo, count):
+        """用 client-state 固定管线指针画 VBO 里的数据。
+
+        布局与包期望的内建属性对应：
+          gl_Vertex         ← offset 0  (vec4)
+          gl_MultiTexCoord0 ← offset 16 (vec4)
+        client state 不是 VAO 状态，必须画前现场设置；画完关数组，
+        免得别的绘制路径（generic attr）被残留状态污染。
+        """
+        api = self.api
+        api.glBindBuffer(glapi.GL_ARRAY_BUFFER, vbo)
+        api.glEnableClientState(glapi.GL_VERTEX_ARRAY)
+        api.glVertexPointer(4, glapi.GL_FLOAT, 32, None)
+        api.glEnableClientState(glapi.GL_TEXTURE_COORD_ARRAY)
+        api.glTexCoordPointer(4, glapi.GL_FLOAT, 32, 16)
+        api.glDrawArrays(glapi.GL_TRIANGLES, 0, count)
+        api.glDisableClientState(glapi.GL_VERTEX_ARRAY)
+        api.glDisableClientState(glapi.GL_TEXTURE_COORD_ARRAY)
 
     def draw(self):
         api = self.api
         api.glBindVertexArray(self.vao)
-        api.glDrawArrays(glapi.GL_TRIANGLES, 0, 6)
+        self._draw_client(self.vbo, 6)
         api.glBindVertexArray(0)
 
     def draw_geometry(self):
-        """绘制世界层几何（由 world_gl 填的 VBO）。"""
+        """绘制世界层几何（由 world_gl 填的 VBO）。
+
+        世界顶点布局（20 float / 顶点，详见 world_gl）：
+          offset 0   vec4 → gl_Vertex
+          offset 16  vec4 → gl_MultiTexCoord0（格子内 UV）
+          offset 32  vec4 → gl_Color（albedo）
+          offset 48  vec4 → gl_MultiTexCoord1（lmcoord，走纹理单元 1）
+          offset 64  vec4 → mc_Entity（generic attrib 4，在 VAO 里）
+        """
         if not self.geo_vao or not self.geo_count:
             return
         api = self.api
         api.glBindVertexArray(self.geo_vao)
+        api.glBindBuffer(glapi.GL_ARRAY_BUFFER, self.geo_vbo)
+        api.glEnableClientState(glapi.GL_VERTEX_ARRAY)
+        api.glVertexPointer(4, glapi.GL_FLOAT, 80, None)
+        api.glEnableClientState(glapi.GL_TEXTURE_COORD_ARRAY)
+        api.glTexCoordPointer(4, glapi.GL_FLOAT, 80, 16)
+        api.glEnableClientState(glapi.GL_COLOR_ARRAY)
+        api.glColorPointer(4, glapi.GL_FLOAT, 80, 32)
+        # lmcoord = 纹理单元 1 的坐标数组（gl_MultiTexCoord1）
+        api.glClientActiveTexture(glapi.GL_TEXTURE0 + 1)
+        api.glEnableClientState(glapi.GL_TEXTURE_COORD_ARRAY)
+        api.glTexCoordPointer(4, glapi.GL_FLOAT, 80, 48)
+        api.glClientActiveTexture(glapi.GL_TEXTURE0)
         api.glDrawArrays(glapi.GL_TRIANGLES, 0, self.geo_count)
+        api.glDisableClientState(glapi.GL_VERTEX_ARRAY)
+        api.glDisableClientState(glapi.GL_TEXTURE_COORD_ARRAY)
+        api.glDisableClientState(glapi.GL_COLOR_ARRAY)
+        api.glClientActiveTexture(glapi.GL_TEXTURE0 + 1)
+        api.glDisableClientState(glapi.GL_TEXTURE_COORD_ARRAY)
+        api.glClientActiveTexture(glapi.GL_TEXTURE0)
         api.glBindVertexArray(0)
 
     def release(self):
